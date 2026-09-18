@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from subscription import (  # noqa: E402
     normalize_target,
+    shorten_target,
     group_display,
     parse_line,
     parse_subscriptions,
@@ -26,8 +27,16 @@ def test_normalize_bare_group():
     assert normalize_target("777777777", "napcat") == "napcat:GroupMessage:777777777"
 
 
+def test_normalize_two_part_shorthand():
+    # 平台id:群号 → 补全 GroupMessage
+    assert normalize_target("napcat:777777777") == "napcat:GroupMessage:777777777"
+    assert normalize_target("default_666666666:777777777") == "default_666666666:GroupMessage:777777777"
+    # 两段简写不受 default_platform 影响（平台已写明）
+    assert normalize_target("napcat:777777777", "aiocqhttp") == "napcat:GroupMessage:777777777"
+
+
 def test_normalize_full_umo_untouched():
-    umo = "aiocqhttp:GroupMessage:777777777"
+    umo = "napcat:GroupMessage:777777777"
     assert normalize_target(umo) == umo
     # 完整 umo 不受 default_platform 影响
     assert normalize_target(umo, "qq_official") == umo
@@ -36,6 +45,16 @@ def test_normalize_full_umo_untouched():
 def test_normalize_empty():
     assert normalize_target("") == ""
     assert normalize_target("   ") == ""
+    assert normalize_target("napcat:") == ""  # 缺群号
+
+
+def test_shorten_target():
+    assert shorten_target("napcat:GroupMessage:777777777") == "napcat:777777777"
+    # 非群消息保持完整
+    assert shorten_target("napcat:FriendMessage:123") == "napcat:FriendMessage:123"
+    # 已经是简写/裸号原样
+    assert shorten_target("napcat:777777777") == "napcat:777777777"
+    assert shorten_target("") == ""
 
 
 def test_group_display():

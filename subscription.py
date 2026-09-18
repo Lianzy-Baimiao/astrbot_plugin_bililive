@@ -27,21 +27,46 @@ GROUP_MSG_TYPE = "GroupMessage"
 
 
 def normalize_target(entry: str, default_platform: str = "aiocqhttp") -> str:
-    """把一个目标群写法归一化成 unified_msg_origin。
+    """把一个目标群写法归一化成完整 unified_msg_origin。
 
-    - 已是完整 umo（含 ":"）：原样返回（去空白）。
-    - 裸群号：补全成 ``{default_platform}:GroupMessage:{群号}``。
+    支持三种写法（短的优先，越少啰嗦）：
 
-    只补全到单一平台，避免同一个群被多个适配器重复推送
-    （这正是旧插件开播发两条的根因）。
+    - ``群号``（裸号，无冒号）→ ``{default_platform}:GroupMessage:{群号}``
+    - ``平台id:群号``（两段简写）→ ``平台id:GroupMessage:群号``
+    - ``平台id:GroupMessage:群号``（完整 umo，三段及以上）→ 原样
+
+    注意：umo 第一段是平台的**实例 id**（如 napcat / default_666666666），
+    不是适配器类型（aiocqhttp / qq_official）——send_message 按 id 匹配。
+    每条自带平台，多平台可混用；裸群号只补到单一平台，避免重复推送。
     """
     s = (entry or "").strip()
     if not s:
         return ""
-    if ":" in s:  # 已经是完整 umo
-        return s
-    plat = (default_platform or "aiocqhttp").strip() or "aiocqhttp"
-    return f"{plat}:{GROUP_MSG_TYPE}:{s}"
+    parts = s.split(":")
+    if len(parts) == 1:  # 裸群号
+        plat = (default_platform or "aiocqhttp").strip() or "aiocqhttp"
+        return f"{plat}:{GROUP_MSG_TYPE}:{s}"
+    if len(parts) == 2:  # 平台id:群号 简写
+        plat, gid = parts[0].strip(), parts[1].strip()
+        if plat and gid:
+            return f"{plat}:{GROUP_MSG_TYPE}:{gid}"
+        return ""
+    return s  # 完整 umo，原样保留
+
+
+def shorten_target(umo: str) -> str:
+    """把完整 umo 缩成最短可读写法，用于写回配置。
+
+    ``平台id:GroupMessage:群号`` → ``平台id:群号``（GroupMessage 冗余，省掉）。
+    其它消息类型（FriendMessage 等）保持完整，避免歧义。
+    """
+    s = (umo or "").strip()
+    if not s:
+        return ""
+    parts = s.split(":")
+    if len(parts) == 3 and parts[1] == GROUP_MSG_TYPE:
+        return f"{parts[0]}:{parts[2]}"
+    return s
 
 
 def group_display(umo: str) -> str:
@@ -113,14 +138,15 @@ def serialize_subscriptions(subs: Dict[str, Dict]) -> List[str]:
     """把内部结构反向序列化回配置用的字符串列表。
 
     只输出还有目标群的 UP；空群的 UP 被丢弃。
-    群写完整 umo（保证往返稳定，不因 default_platform 改变而漂移）。
+    群写成 ``平台id:群号`` 简写（保证往返稳定，不因 default_platform 改变而漂移，
+    又不啰嗦重复 GroupMessage）。
     """
     lines: List[str] = []
     for uid, info in subs.items():
         groups = info.get("groups", []) if isinstance(info, dict) else []
         if not groups:
             continue
-        line = f"{uid}={','.join(groups)}"
+        line = f"{uid}={','.join(shorten_target(g) for g in groups)}"
         if isinstance(info, dict) and info.get("at_all"):
             line += " | at_all"
         lines.append(line)

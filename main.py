@@ -75,7 +75,37 @@ class BiliLivePlugin(Star):
 
     @property
     def default_platform(self) -> str:
-        return str(self._cfg("default_platform", "aiocqhttp") or "aiocqhttp").strip() or "aiocqhttp"
+        """裸群号补全用的平台『实例id』。
+
+        配置留空时自动探测第一个已加载平台的 id（send_message 按 id 匹配）。
+        探测不到才回落 aiocqhttp。
+        """
+        configured = str(self._cfg("default_platform", "") or "").strip()
+        if configured:
+            return configured
+        ids = self._platform_ids()
+        return ids[0] if ids else "aiocqhttp"
+
+    def _platform_ids(self) -> List[str]:
+        """当前已加载平台的实例 id 列表；取不到返回空。"""
+        getters = (
+            lambda: self.context.platform_manager.platform_insts,
+            lambda: self.context.get_platform_insts(),
+        )
+        for get in getters:
+            try:
+                insts = get()
+            except Exception:
+                continue
+            ids = []
+            for p in insts or []:
+                try:
+                    ids.append(str(p.meta().id))
+                except Exception:
+                    continue
+            if ids:
+                return ids
+        return []
 
     # ---------- 订阅数据：config 是唯一真相源 ----------
     def _load_subs(self) -> Dict[str, Dict]:
@@ -412,8 +442,9 @@ class BiliLivePlugin(Star):
                 return
             uname = status_info.get("uname", "未知UP主")
             room_id = status_info.get("room_id", 0)
+            cover = status_info.get("cover", "")
             template = self._cfg("end_notify_template", "⚫ {uname} 已结束直播")
-            chain = self._build_message_chain(template, uname, "", room_id, "", False)
+            chain = self._build_message_chain(template, uname, "", room_id, cover, False)
             await self.context.send_message(origin, chain)
             logger.info(f"关播通知已发送: {uname} -> {origin}")
         except Exception as e:

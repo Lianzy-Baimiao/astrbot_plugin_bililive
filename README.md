@@ -21,8 +21,8 @@
 
 | 配置项 | 说明 |
 | --- | --- |
-| `subscriptions` | **订阅列表**，每行一个UP，格式 `UID=群号[,群号...][ \| at_all]` |
-| `default_platform` | 裸群号补全到哪个平台（NapCat/OneBot 填 `aiocqhttp`，QQ官方填 `qq_official`） |
+| `subscriptions` | **订阅列表**，每行一个UP，格式 `UID=目标[,目标...][ \| at_all]` |
+| `default_platform` | 裸群号补全到哪个平台**实例id**（留空自动探测第一个平台） |
 | `check_interval` | 检查间隔（秒），建议 30-300 |
 | `max_monitors` | 最大监控 UP 数 |
 | `enable_notifications` | 开播通知总开关 |
@@ -32,15 +32,20 @@
 
 ### subscriptions 写法
 
+每个「目标」有三种写法，短的优先：
+
 ```
-111111111=777777777,888888888      # 该UP开播时推送到 777777777 和 888888888 两个群
-222222222=777777777 | at_all         # 开播时@全体成员
-333333333=aiocqhttp:GroupMessage:777777777   # 也可写完整 unified_msg_origin
+111111111=777777777                # ①裸群号，按 default_platform 补全
+111111111=napcat:777777777         # ②平台id:群号（推荐，可多平台混用）
+111111111=napcat:GroupMessage:777777777   # ③完整 unified_msg_origin
+222222222=napcat:777777777 | at_all          # 开播时@全体成员
+111111111=napcat:777777777,default_666666666:777777777   # 同一UP推到多个平台
 ```
 
-- 群号可填**裸群号**（按 `default_platform` 自动补全）或**完整 unified_msg_origin**
+- 冒号前是平台的**实例 id**（在 AstrBot「配置 → 消息平台」里看，如 `napcat`、`default_666666666`），**不是**类型名 `aiocqhttp`/`qq_official`
 - 末尾加 ` | at_all` 表示该UP开播时@全体成员
 - 同一UID可写多行，会自动合并群列表
+- 保存后会自动统一成 `平台id:群号` 简写
 
 ## 聊天命令
 
