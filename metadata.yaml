@@ -1,0 +1,8 @@
+name: astrbot_plugin_bililive
+desc: B站UP主开播监测插件，每个UP主可各自配置推送目标群，配置界面/聊天命令双向管理，数据落规范目录。
+short_desc: B站UP主开播监测
+display_name: B站开播监测
+author: BB0813
+version: 2.0.0
+repo: https://github.com/BB0813/astrbot_plugin_bilibiliobs
+astrbot_version: ">=4.0.0"

@@ -1,0 +1,57 @@
+{
+  "subscriptions": {
+    "description": "订阅列表（每行一个UP主）",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": [],
+    "hint": "格式: UID=群号[,群号...][ | at_all]。例: 111111111=777777777,888888888 表示该UP开播时推送到这两个群; 222222222=777777777 | at_all 表示开播@全体成员。群号可填裸号(按下面『默认平台』自动补全)或完整 unified_msg_origin(如 aiocqhttp:GroupMessage:777777777)。也可在群里用 /订阅 <UID> 直接把当前群加进来。"
+  },
+  "default_platform": {
+    "description": "裸群号归属的平台适配器",
+    "type": "string",
+    "default": "aiocqhttp",
+    "hint": "上面订阅列表里填『裸群号』时，补全到哪个平台。QQ用NapCat/OneBot填 aiocqhttp；QQ官方机器人填 qq_official。只补一个平台，避免同一个群被多个适配器重复推送(这是旧插件开播发两条的根因)。"
+  },
+  "check_interval": {
+    "description": "监控检查间隔（秒）",
+    "type": "int",
+    "default": 60,
+    "hint": "检查UP主直播状态的间隔，建议30-300秒。太频繁易被B站限流。"
+  },
+  "max_monitors": {
+    "description": "最大监控UP主数量",
+    "type": "int",
+    "default": 50,
+    "hint": "限制订阅的UP主总数，避免API请求过于频繁。"
+  },
+  "enable_notifications": {
+    "description": "启用开播通知",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后所有开播/关播通知都不发送。"
+  },
+  "enable_end_notifications": {
+    "description": "启用关播通知",
+    "type": "bool",
+    "default": true,
+    "hint": "仅控制关播(结束直播)通知；需在『启用开播通知』开启的前提下生效。"
+  },
+  "bilibili_cookie": {
+    "description": "B站Cookie（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "填入B站登录Cookie可获得更高API限额，减少被限流。留空则匿名请求。也可管理员私聊Bot发『b站登录』扫码自动获取。"
+  },
+  "live_notify_template": {
+    "description": "开播通知模板",
+    "type": "string",
+    "default": "🔴 {uname} 开播啦！\n📺 直播标题: {title}\n🔗 直播间: https://live.bilibili.com/{room_id}",
+    "hint": "占位符: {uname} UP主名称, {title} 直播标题, {room_id} 直播间号。封面图会自动附带，无需在模板里写。"
+  },
+  "end_notify_template": {
+    "description": "关播通知模板",
+    "type": "string",
+    "default": "⚫ {uname} 已结束直播",
+    "hint": "占位符: {uname} UP主名称, {room_id} 直播间号。"
+  }
+}
