@@ -25,18 +25,24 @@ class BilibiliLoginManager:
     NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
     QR_CODE_TTL_SECONDS = 180
 
-    def __init__(self, context, config_save_callback):
+    def __init__(self, context, config_save_callback,
+                 admin_ids_provider=None, admin_targets_provider=None):
         """初始化登录管理器
 
         Args:
             context: AstrBot Context 对象
             config_save_callback: 保存Cookie的回调，签名 async def(cookie: str)
+            admin_ids_provider: 返回管理员QQ号列表的回调（用于命令鉴权），可为 None
+            admin_targets_provider: 返回管理员私聊 umo 列表的回调（用于失效提醒），可为 None
         """
         self.context = context
         self.config_save_callback = config_save_callback
+        self.admin_ids_provider = admin_ids_provider
+        self.admin_targets_provider = admin_targets_provider
         self._login_in_progress = False
         self._lock = asyncio.Lock()
-        self._admin_id = None  # 管理员ID，首次私聊时自动记录
+        self._admin_id = None  # 管理员ID，首次私聊时自动记录（admin_ids 未配置时的兜底）
+        self._last_invalid_cookie = None  # 已提醒过失效的 Cookie，避免重试期间刷屏
 
     async def validate_cookie(self, cookie: str) -> Optional[bool]:
         """验证Cookie是否有效
@@ -76,6 +82,16 @@ class BilibiliLoginManager:
             logger.error(f"验证Cookie失败: {e}")
             return None
 
+    def _admin_ids(self) -> list:
+        """从插件回调读取管理员QQ号列表；未提供回调时返回空。"""
+        if not self.admin_ids_provider:
+            return []
+        try:
+            return [str(x).strip() for x in (self.admin_ids_provider() or []) if str(x).strip()]
+        except Exception as e:
+            logger.error(f"读取管理员列表失败: {e}")
+            return []
+
     async def handle_admin_command(self, event: AstrMessageEvent) -> bool:
         """处理管理员更新Cookie命令
 
@@ -90,7 +106,21 @@ class BilibiliLoginManager:
         if message_text.lower() not in ["更新cookie", "更新b站cookie", "b站登录", "bilibili登录"]:
             return False
 
-        # 记录管理员ID
+        # 配置了 admin_ids 时做鉴权
+        admin_ids = self._admin_ids()
+        if admin_ids:
+            sender = ""
+            try:
+                sender = str(event.get_sender_id() or "")
+            except Exception:
+                pass
+            if sender not in admin_ids:
+                logger.warning(f"非管理员({sender or '未知'})尝试B站登录命令，已拒绝")
+                await event.send(event.plain_result(
+                    "❌ 仅插件管理员可以B站登录（在插件配置 admin_ids 中填写QQ号）"))
+                return True
+
+        # 记录管理员ID（admin_ids 未配置时的兜底提醒目标）
         if not self._admin_id:
             self._admin_id = event.unified_msg_origin
             logger.info(f"已记录管理员ID: {self._admin_id}")
@@ -98,14 +128,30 @@ class BilibiliLoginManager:
         await self._start_login_flow(event)
         return True
 
+    def _resolve_admin_targets(self) -> list:
+        """Cookie 失效提醒目标：优先插件配置的管理员，退回本次运行记录的私聊。"""
+        if self.admin_targets_provider:
+            try:
+                targets = [str(t).strip() for t in (self.admin_targets_provider() or []) if str(t).strip()]
+                if targets:
+                    return targets
+            except Exception as e:
+                logger.error(f"生成管理员提醒目标失败: {e}")
+        return [self._admin_id] if self._admin_id else []
+
     async def check_and_notify_cookie_invalid(self, cookie: str, reason: str = ""):
-        """检查Cookie是否失效，失效则通知管理员"""
-        if not self._admin_id:
-            logger.warning("未记录管理员ID，无法发送Cookie失效通知")
+        """检查Cookie是否失效，失效则通知管理员（同一 Cookie 只提醒一次）"""
+        targets = self._resolve_admin_targets()
+        if not targets:
+            logger.warning("未配置 admin_ids 且本次运行未记录管理员私聊，无法发送Cookie失效通知")
+            return
+
+        if cookie and cookie == self._last_invalid_cookie:
             return
 
         is_valid = await self.validate_cookie(cookie)
         if is_valid is False:
+            self._last_invalid_cookie = cookie
             reason_text = reason or "Cookie已失效"
             message = (
                 f"⚠️ 检测到B站Cookie不可用\n"
@@ -115,16 +161,22 @@ class BilibiliLoginManager:
                 f"• b站登录\n"
                 f"或手动在插件配置中更新 bilibili_cookie"
             )
-            try:
-                await self.context.send_message(self._admin_id, message)
-                logger.info("已向管理员发送Cookie失效通知")
-            except Exception as e:
-                logger.error(f"发送Cookie失效通知失败: {e}")
+            for target in targets:
+                try:
+                    await self.context.send_message(target, message)
+                    logger.info(f"已向管理员发送Cookie失效通知: {target}")
+                except Exception as e:
+                    logger.error(f"发送Cookie失效通知失败({target}): {e}")
 
     def _is_private_message(self, event: AstrMessageEvent) -> bool:
-        """判断是否为私聊消息"""
-        origin = event.unified_msg_origin or ""
-        return "group" not in origin.lower() and "qq_" in origin.lower()
+        """判断是否为私聊消息（按消息类型判断，跨平台通用）。"""
+        try:
+            return bool(event.is_private_chat())
+        except Exception:
+            pass
+        # 旧版 AstrBot 兜底：unified_msg_origin 第二段是消息类型
+        parts = (event.unified_msg_origin or "").split(":")
+        return len(parts) >= 2 and parts[1].lower() in ("friendmessage", "privatemessage")
 
     async def _start_login_flow(self, event: AstrMessageEvent):
         """启动扫码登录流程"""
@@ -263,6 +315,7 @@ class BilibiliLoginManager:
                             if code == 0:
                                 cookie = self._extract_cookie(resp)
                                 if cookie:
+                                    self._last_invalid_cookie = None
                                     await self.config_save_callback(cookie)
                                     await self.context.send_message(
                                         unified_msg_origin,

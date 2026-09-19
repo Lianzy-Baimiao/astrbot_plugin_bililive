@@ -4,19 +4,19 @@
     "type": "list",
     "items": {"type": "string"},
     "default": [],
-    "hint": "格式: UID=目标[,目标...][ | at_all]。每个『目标』有三种写法(短的优先): ①裸群号 777777777 (按下面『默认平台』补全); ②平台id:群号 napcat:777777777 (推荐，可多平台混用); ③完整 napcat:GroupMessage:777777777。例: 111111111=napcat:777777777,default_666666666:777777777 表示同时推到 napcat 和 QQ官方两个平台。末尾加 | at_all 开播@全体。也可在群里用 /订阅 <UID> 直接把当前群加进来。"
+    "hint": "格式: UID=目标[,目标...]。每个『目标』有三种写法(短的优先): ①裸群号 777777777 (按下面『默认平台』补全); ②平台id:群号 napcat:777777777 (推荐，可多平台混用); ③完整 napcat:GroupMessage:777777777。目标后加 @all 只对该群开播@全体: napcat:777777777@all；行尾加 | at_all 对整行所有群@全体(旧写法，自动兼容)。以 # 开头的行是注释，格式错误的行会被忽略并在日志与 /开播监测状态 中提示。也可在群里用 /订阅 <UID> 直接把当前群加进来。"
   },
   "default_platform": {
     "description": "裸群号归属的平台id（可留空自动探测）",
     "type": "string",
     "default": "",
-    "hint": "订阅列表里填『裸群号』时补全到哪个平台。注意填的是平台『实例id』(在 配置→消息平台 里看，如 napcat、default_666666666)，不是类型(aiocqhttp/qq_official)。留空则自动用第一个已加载的平台。想推多个平台请用『平台id:群号』写法逐个写明。"
+    "hint": "订阅列表里填『裸群号』时补全到哪个平台。注意填的是平台『实例id』(在 配置→消息平台 里看，如 napcat、default_666666666)，不是类型(aiocqhttp/qq_official)。留空则自动用第一个已加载的平台，实际生效值可用 /开播监测状态 查看。想推多个平台请用『平台id:群号』写法逐个写明。"
   },
   "check_interval": {
     "description": "监控检查间隔（秒）",
     "type": "int",
     "default": 60,
-    "hint": "检查UP主直播状态的间隔，建议30-300秒。太频繁易被B站限流。"
+    "hint": "检查UP主直播状态的间隔。实际生效范围钳制在 30-600 秒，太频繁易被B站限流。"
   },
   "max_monitors": {
     "description": "最大监控UP主数量",
@@ -25,16 +25,35 @@
     "hint": "限制订阅的UP主总数，避免API请求过于频繁。"
   },
   "enable_notifications": {
-    "description": "启用开播通知",
+    "description": "启用开播通知（全局总开关）",
     "type": "bool",
     "default": true,
-    "hint": "关闭后所有开播/关播通知都不发送。"
+    "hint": "全局总开关，关闭后所有群的开播/关播通知都不发送。单群的开/关在群里用 /开启通知 /关闭通知 控制（仅管理员）。"
   },
   "enable_end_notifications": {
-    "description": "启用关播通知",
+    "description": "启用关播通知（全局总开关）",
     "type": "bool",
     "default": true,
-    "hint": "仅控制关播(结束直播)通知；需在『启用开播通知』开启的前提下生效。"
+    "hint": "全局总开关，仅控制关播(结束直播)通知；需在『启用开播通知』开启的前提下生效。单群的开/关在群里用 /开启关播通知 /关闭关播通知 控制。"
+  },
+  "send_cover": {
+    "description": "推送附带直播封面图",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后开播/关播通知自动附带封面图；关闭则只发文字。手动 /检查直播 查询不受此项控制。"
+  },
+  "quiet_hours": {
+    "description": "静音时段（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "格式 HH:MM-HH:MM，如 23:00-08:00（支持跨零点）。该时段暂停检查与推送，期间开播/关播不再单独提醒；时段结束后按状态差异补推（仍在播的补一条开播）。留空关闭。"
+  },
+  "admin_ids": {
+    "description": "管理员QQ号列表",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": [],
+    "hint": "插件管理员（填QQ号，可多个）。用于: ①群里 /开启通知 /关闭通知 等命令鉴权; ②B站Cookie失效时私聊提醒; ③私聊扫码登录鉴权。留空则命令回退用 AstrBot 全局管理员判定、Cookie提醒退回运行期间记录的私聊。"
   },
   "bilibili_cookie": {
     "description": "B站Cookie（可选）",
@@ -46,7 +65,7 @@
     "description": "开播通知模板",
     "type": "string",
     "default": "🔴 {uname} 开播啦！\n📺 直播标题: {title}\n🔗 直播间: https://live.bilibili.com/{room_id}",
-    "hint": "占位符: {uname} UP主名称, {title} 直播标题, {room_id} 直播间号。封面图会自动附带，无需在模板里写。"
+    "hint": "占位符: {uname} UP主名称, {title} 直播标题, {room_id} 直播间号。写错占位符不影响推送（原样保留），花括号不配对时按原文发送。封面图会自动附带，无需在模板里写。"
   },
   "end_notify_template": {
     "description": "关播通知模板",

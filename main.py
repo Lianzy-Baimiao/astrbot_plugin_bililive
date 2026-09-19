@@ -1,7 +1,10 @@
 import asyncio
 import aiohttp
+import html
 import json
 import os
+import re
+from datetime import datetime
 from typing import Dict, List, Optional
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
@@ -12,8 +15,15 @@ from . import subscription as sub
 PLUGIN_NAME = "astrbot_plugin_bililive"
 
 
-@register("astrbot_plugin_bililive", "BB0813", "B站UP主开播监测插件", "2.0.0",
-          "https://github.com/BB0813/astrbot_plugin_bilibiliobs")
+class _SafeFormatDict(dict):
+    """format_map 用：未知占位符原样保留而不是抛 KeyError，模板写错不炸推送。"""
+
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+@register("astrbot_plugin_bililive", "BB0813", "B站UP主开播监测插件", "2.1.0",
+          "https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive")
 class BiliLivePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -23,7 +33,7 @@ class BiliLivePlugin(Star):
         self.live_status_cache: Dict[str, int] = {}
         self.uid_error_counts: Dict[str, int] = {}
         self.uid_skip_until: Dict[str, float] = {}
-        self.current_interval = self._cfg_int("check_interval", 60)
+        self.current_interval = max(30, min(600, self._cfg_int("check_interval", 60)))
         self._last_rate_limited = False
 
         self._init_lock = asyncio.Lock()
@@ -34,11 +44,16 @@ class BiliLivePlugin(Star):
         # 数据目录（规范路径：data/plugin_data/astrbot_plugin_bililive/）
         self.data_dir = self._get_data_dir()
         self.state_file = os.path.join(self.data_dir, "state.json")
+        self.group_settings_file = os.path.join(self.data_dir, "groups.json")
+        self.group_settings: Dict[str, Dict] = {}  # {umo: {notify: bool, notify_end: bool}}
 
         # 登录管理器
-        self.login_manager = BilibiliLoginManager(context, self._save_cookie_to_config)
-
-        asyncio.create_task(self.initialize())
+        self.login_manager = BilibiliLoginManager(
+            context, self._save_cookie_to_config,
+            admin_ids_provider=self._admin_ids,
+            admin_targets_provider=self._admin_notify_targets,
+        )
+        # initialize() 由框架在加载插件后自动 await（官方生命周期钩子）
 
     # ---------- 配置读取小工具 ----------
     def _cfg(self, key: str, default=None):
@@ -67,7 +82,8 @@ class BiliLivePlugin(Star):
 
     @property
     def check_interval(self) -> int:
-        return self._cfg_int("check_interval", 60)
+        # 钳制在 30-600 秒：太小会被 B 站限流，太大失去监测意义
+        return max(30, min(600, self._cfg_int("check_interval", 60)))
 
     @property
     def max_monitors(self) -> int:
@@ -88,29 +104,32 @@ class BiliLivePlugin(Star):
 
     def _platform_ids(self) -> List[str]:
         """当前已加载平台的实例 id 列表；取不到返回空。"""
-        getters = (
-            lambda: self.context.platform_manager.platform_insts,
-            lambda: self.context.get_platform_insts(),
-        )
-        for get in getters:
+        try:
+            insts = self.context.platform_manager.platform_insts
+        except Exception:
+            return []
+        ids = []
+        for p in insts or []:
             try:
-                insts = get()
+                ids.append(str(p.meta().id))
             except Exception:
                 continue
-            ids = []
-            for p in insts or []:
-                try:
-                    ids.append(str(p.meta().id))
-                except Exception:
-                    continue
-            if ids:
-                return ids
-        return []
+        return ids
 
     # ---------- 订阅数据：config 是唯一真相源 ----------
     def _load_subs(self) -> Dict[str, Dict]:
         """从 config 读取并解析订阅（每次现读现解析，保证与WebUI改动同步）。"""
         return sub.parse_subscriptions(self._cfg("subscriptions", []) or [], self.default_platform)
+
+    def _invalid_sub_lines(self) -> List[str]:
+        """配置里无法解析的订阅行（排除空行和 # 注释），用于日志与状态提示。"""
+        lines = self._cfg("subscriptions", []) or []
+        bad = []
+        for ln in lines:
+            s = str(ln).strip()
+            if s and not s.startswith("#") and sub.parse_line(s, self.default_platform) is None:
+                bad.append(s)
+        return bad
 
     async def _save_subs(self, subs: Dict[str, Dict]):
         """把订阅结构序列化回 config 并落盘（WebUI 与命令共用）。"""
@@ -121,6 +140,7 @@ class BiliLivePlugin(Star):
             logger.error(f"写入订阅到配置失败: {e}")
             return
         await self._persist_config()
+        self._prune_group_settings(subs)
 
     async def _persist_config(self):
         """调用 AstrBotConfig 的保存方法，兼容同步/异步两种。"""
@@ -147,6 +167,120 @@ class BiliLivePlugin(Star):
                 base = os.path.join(os.path.expanduser("~"), ".astrbot", "plugin_data", PLUGIN_NAME)
         os.makedirs(base, exist_ok=True)
         return base
+
+    # ---------- 按群通知开关（groups.json） ----------
+    def _load_group_settings(self):
+        try:
+            if os.path.exists(self.group_settings_file):
+                with open(self.group_settings_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self.group_settings = {str(k): v for k, v in data.items() if isinstance(v, dict)}
+        except Exception as e:
+            logger.error(f"加载群通知设置失败: {e}")
+
+    def _save_group_settings(self):
+        try:
+            with open(self.group_settings_file, "w", encoding="utf-8") as f:
+                json.dump(self.group_settings, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存群通知设置失败: {e}")
+
+    def _group_notify_enabled(self, origin: str, kind: str) -> bool:
+        """某会话的通知开关（kind: notify / notify_end），未设置默认开启。"""
+        st = self.group_settings.get(origin or "")
+        if not isinstance(st, dict):
+            return True
+        return bool(st.get(kind, True))
+
+    def _set_group_notify(self, origin: str, kind: str, value: bool):
+        st = self.group_settings.setdefault(origin or "", {})
+        st[kind] = bool(value)
+        self._save_group_settings()
+
+    def _prune_group_settings(self, subs: Dict[str, Dict]):
+        """清掉已无任何订阅引用的会话设置，避免 groups.json 无限膨胀。"""
+        referenced = {
+            g.get("umo")
+            for info in subs.values()
+            for g in info.get("groups", [])
+            if isinstance(g, dict)
+        }
+        stale = [k for k in self.group_settings if k not in referenced]
+        if stale:
+            for k in stale:
+                del self.group_settings[k]
+            self._save_group_settings()
+
+    # ---------- 管理员 ----------
+    def _admin_ids(self) -> List[str]:
+        """插件配置的管理员QQ号列表（归一化为字符串）。"""
+        raw = self._cfg("admin_ids", []) or []
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    def _is_admin(self, event: AstrMessageEvent) -> bool:
+        """插件配置的 admin_ids 优先；未配置时退回 AstrBot 全局管理员判定。"""
+        ids = self._admin_ids()
+        if ids:
+            try:
+                return str(event.get_sender_id()) in ids
+            except Exception:
+                return False
+        try:
+            return bool(event.is_admin())
+        except Exception:
+            return False
+
+    def _admin_notify_targets(self) -> List[str]:
+        """Cookie 失效等要私聊提醒的管理员目标（unified_msg_origin）。"""
+        plat = self.default_platform
+        return [f"{plat}:FriendMessage:{qq}" for qq in self._admin_ids()]
+
+    # ---------- 静音时段 ----------
+    def _parse_quiet_hours(self):
+        """解析静音时段配置 'HH:MM-HH:MM'，返回 (time, time) 或 None。"""
+        raw = str(self._cfg("quiet_hours", "") or "").strip()
+        if not raw:
+            return None
+        m = re.match(r"^(\d{1,2}):(\d{2})\s*[-~至到]\s*(\d{1,2}):(\d{2})$", raw)
+        if not m:
+            return None
+        sh, sm, eh, em = (int(x) for x in m.groups())
+        if not (0 <= sh < 24 and 0 <= eh <= 24 and 0 <= sm < 60 and 0 <= em < 60):
+            return None
+        if eh == 24 and em:
+            return None
+        from datetime import time as dtime
+        return dtime(sh, sm), dtime(eh % 24, em)
+
+    def _in_quiet_hours(self) -> bool:
+        span = self._parse_quiet_hours()
+        if not span:
+            return False
+        start, end = span
+        now = datetime.now().time()
+        if start <= end:
+            return start <= now < end
+        return now >= start or now < end  # 跨零点，如 23:00-08:00
+
+    # ---------- 通知模板 ----------
+    def _render_template(self, template: str, **fields) -> str:
+        """容错格式化：未知占位符原样保留，花括号不配对时按原文发送。"""
+        try:
+            return template.format_map(_SafeFormatDict(**fields))
+        except Exception as e:
+            logger.warning(f"通知模板格式有误（花括号未配对?），按原文发送: {e}")
+            return template
+
+    def _validate_templates(self):
+        for name in ("live_notify_template", "end_notify_template"):
+            t = str(self._cfg(name, "") or "")
+            if not t:
+                continue
+            try:
+                t.format_map(_SafeFormatDict(uname="x", title="x", room_id=0))
+            except Exception as e:
+                logger.warning(f"配置项 {name} 存在未配对的花括号，推送时将按原文发送: {e}")
 
     # ---------- 直播状态缓存持久化 ----------
     def _load_state(self):
@@ -185,6 +319,12 @@ class BiliLivePlugin(Star):
                 logger.info("正在初始化B站开播监测插件...")
                 await self.ensure_session()
                 self._load_state()
+                self._load_group_settings()
+                self._validate_templates()
+
+                bad_lines = self._invalid_sub_lines()
+                if bad_lines:
+                    logger.warning(f"订阅配置中有 {len(bad_lines)} 行无法解析（已忽略），示例: {bad_lines[:3]}")
 
                 subs = self._load_subs()
                 # 首次运行时，给已订阅的UP播下当前状态，避免把正在直播的误判为"刚开播"
@@ -331,7 +471,8 @@ class BiliLivePlugin(Star):
         return {
             "live_status": d.get("live_status", 0),
             "room_id": d.get("room_id", 0),
-            "title": d.get("title", ""),
+            # B站接口的标题常带 HTML 实体（&quot; 等），转义后更可读
+            "title": html.unescape(d.get("title", "") or ""),
             "uname": d.get("uname", ""),
             "cover": d.get("cover_from_user", "") or d.get("cover", ""),
         }
@@ -343,6 +484,11 @@ class BiliLivePlugin(Star):
 
         while True:
             try:
+                # 静音时段：暂停检查与推送，期间的状态变化靠缓存差异在结束后补推
+                if self._in_quiet_hours():
+                    await asyncio.sleep(min(60, self.current_interval))
+                    continue
+
                 subs = self._load_subs()
                 if not subs:
                     await asyncio.sleep(self.check_interval)
@@ -365,14 +511,13 @@ class BiliLivePlugin(Star):
 
                     info = subs.get(uid, {})
                     groups = info.get("groups", [])
-                    at_all = info.get("at_all", False)
 
                     if cur_status == 1 and prev_status != 1:
-                        for origin in groups:
-                            await self.send_live_notification(current, origin, at_all)
+                        for g in groups:
+                            await self.send_live_notification(current, g["umo"], g.get("at_all", False))
                     elif prev_status == 1 and cur_status != 1:
-                        for origin in groups:
-                            await self.send_end_notification(current, origin, at_all)
+                        for g in groups:
+                            await self.send_end_notification(current, g["umo"], False)
 
                     self.live_status_cache[uid] = cur_status
 
@@ -411,18 +556,20 @@ class BiliLivePlugin(Star):
     # ---------- 通知 ----------
     def _build_message_chain(self, template: str, uname: str, title: str, room_id, cover: str,
                              at_all: bool = False) -> MessageChain:
-        text = template.format(uname=uname, title=title, room_id=room_id)
+        text = self._render_template(template, uname=uname, title=title, room_id=room_id)
         chain = MessageChain()
         if at_all:
             chain.at_all()
         chain.message(text)
-        if cover:
+        if cover and self._cfg_bool("send_cover", True):
             chain.url_image(cover)
         return chain
 
     async def send_live_notification(self, status_info: Dict, origin: str, at_all: bool):
         try:
             if not self.enable_notifications:
+                return
+            if not self._group_notify_enabled(origin, "notify"):
                 return
             uname = status_info.get("uname", "未知UP主")
             title = status_info.get("title", "无标题")
@@ -440,6 +587,8 @@ class BiliLivePlugin(Star):
         try:
             if not self.enable_notifications or not self.enable_end_notifications:
                 return
+            if not self._group_notify_enabled(origin, "notify_end"):
+                return
             uname = status_info.get("uname", "未知UP主")
             room_id = status_info.get("room_id", 0)
             cover = status_info.get("cover", "")
@@ -451,11 +600,11 @@ class BiliLivePlugin(Star):
             logger.error(f"发送关播通知失败: {e}")
 
     # ---------- 命令 ----------
-    @filter.command("")
-    async def handle_all_messages(self, event: AstrMessageEvent):
-        """拦截所有消息，优先处理管理员私聊登录命令。"""
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    async def handle_private_message(self, event: AstrMessageEvent):
+        """私聊消息入口：处理管理员扫码登录命令（官方 event_message_type 过滤器）。"""
         if await self.login_manager.handle_admin_command(event):
-            return
+            event.stop_event()  # 登录关键词已消费，不再交给后续处理器/LLM
 
     @filter.command("订阅")
     async def subscribe(self, event: AstrMessageEvent):
@@ -479,7 +628,7 @@ class BiliLivePlugin(Star):
                 return
 
             # 已在当前群订阅？
-            if uid in subs and origin in subs[uid].get("groups", []):
+            if uid in subs and any(g.get("umo") == origin for g in subs[uid].get("groups", [])):
                 yield event.plain_result(f"❌ 本群已订阅UID {uid}，请勿重复添加")
                 return
 
@@ -523,7 +672,8 @@ class BiliLivePlugin(Star):
                 uid = group_uids[int(token) - 1]
             elif token in group_uids:
                 uid = token
-            elif token.isdigit() and token in subs and origin in subs[token].get("groups", []):
+            elif token.isdigit() and token in subs and any(
+                    g.get("umo") == origin for g in subs[token].get("groups", [])):
                 uid = token
 
             if not uid:
@@ -556,7 +706,9 @@ class BiliLivePlugin(Star):
                 st = status_map.get(uid, {})
                 uname = st.get("uname") or "未知UP主"
                 live = "🔴 直播中" if st.get("live_status") == 1 else "⚫ 未开播"
-                at_tip = " 📢@all" if subs.get(uid, {}).get("at_all") else ""
+                g_entry = next(
+                    (g for g in subs.get(uid, {}).get("groups", []) if g.get("umo") == origin), {})
+                at_tip = " 📢@all" if g_entry.get("at_all") else ""
                 message += f"{i}. {uname}(UID:{uid}) - {live}{at_tip}\n"
             message += "\n退订用 /退订 <序号>"
             yield event.plain_result(message.strip())
@@ -600,57 +752,93 @@ class BiliLivePlugin(Star):
 
     @filter.command("开播监测状态")
     async def plugin_status(self, event: AstrMessageEvent):
-        """查看插件运行状态。"""
+        """查看插件运行状态与生效配置。"""
         try:
+            origin = event.unified_msg_origin
             subs = self._load_subs()
             total_groups = sum(len(v.get("groups", [])) for v in subs.values())
+            interval_tip = ""
+            if int(self.current_interval) != self.check_interval:
+                interval_tip = f"（限流退避中，当前 {int(self.current_interval)} 秒）"
+            quiet_raw = str(self._cfg("quiet_hours", "") or "").strip()
+
             message = "🔧 B站开播监测状态:\n"
             message += f"• HTTP会话: {'✅ 正常' if (self.session and not self.session.closed) else '❌ 异常'}\n"
             message += f"• 监控任务: {'✅ 运行中' if (self.monitor_task and not self.monitor_task.done()) else '❌ 已停止'}\n"
-            message += f"• 监控UP数: {len(subs)}\n"
-            message += f"• 群订阅数: {total_groups}\n"
+            message += f"• 全局通知: 开播 {'✅' if self.enable_notifications else '❌'} / 关播 {'✅' if self.enable_end_notifications else '❌'}\n"
+            message += (f"• 本会话通知: 开播 {'✅' if self._group_notify_enabled(origin, 'notify') else '❌'}"
+                        f" / 关播 {'✅' if self._group_notify_enabled(origin, 'notify_end') else '❌'}\n")
+            configured_dp = str(self._cfg("default_platform", "") or "").strip()
+            message += f"• 默认平台: {self.default_platform}（{'配置指定' if configured_dp else '自动探测'}）\n"
+            message += f"• 检查间隔: {self.check_interval} 秒{interval_tip}\n"
+            if quiet_raw:
+                if self._parse_quiet_hours() is None:
+                    message += f"• 静音时段: {quiet_raw}（⚠️ 格式无效，应为 HH:MM-HH:MM，已忽略）\n"
+                else:
+                    state = "💤 静音中" if self._in_quiet_hours() else "非静音时段"
+                    message += f"• 静音时段: {quiet_raw}（{state}）\n"
+            message += f"• 监控UP: {len(subs)}/{self.max_monitors}，群订阅 {total_groups} 条\n"
+            bad_lines = self._invalid_sub_lines()
+            if bad_lines:
+                preview = "；".join(ln[:20] for ln in bad_lines[:3])
+                message += f"• ⚠️ 有 {len(bad_lines)} 行订阅配置无法解析（已忽略）: {preview}\n"
             message += f"• 数据目录: {self.data_dir}"
             yield event.plain_result(message)
         except Exception as e:
             logger.error(f"获取插件状态失败: {e}")
             yield event.plain_result("❌ 获取插件状态失败")
 
+    # ---------- 通知开关（按群生效，仅管理员） ----------
+    _ADMIN_TIP = (
+        "❌ 仅管理员可以开关通知。\n"
+        "请在插件配置 admin_ids 里填管理员QQ号，"
+        "或把使用者设为 AstrBot 全局管理员。"
+    )
+
     @filter.command("开启通知")
     async def enable_notify_cmd(self, event: AstrMessageEvent):
+        if not self._is_admin(event):
+            yield event.plain_result(self._ADMIN_TIP)
+            return
         try:
-            self.config["enable_notifications"] = True
-            await self._persist_config()
-            yield event.plain_result("✅ 已开启开播与关播通知")
+            self._set_group_notify(event.unified_msg_origin, "notify", True)
+            yield event.plain_result("✅ 已开启本群的开播/关播通知")
         except Exception as e:
             logger.error(f"开启通知失败: {e}")
             yield event.plain_result("❌ 开启通知失败")
 
     @filter.command("关闭通知")
     async def disable_notify_cmd(self, event: AstrMessageEvent):
+        if not self._is_admin(event):
+            yield event.plain_result(self._ADMIN_TIP)
+            return
         try:
-            self.config["enable_notifications"] = False
-            await self._persist_config()
-            yield event.plain_result("✅ 已关闭所有通知")
+            self._set_group_notify(event.unified_msg_origin, "notify", False)
+            yield event.plain_result("✅ 已关闭本群的所有通知（其他群不受影响）")
         except Exception as e:
             logger.error(f"关闭通知失败: {e}")
             yield event.plain_result("❌ 关闭通知失败")
 
     @filter.command("开启关播通知")
     async def enable_end_notify_cmd(self, event: AstrMessageEvent):
+        if not self._is_admin(event):
+            yield event.plain_result(self._ADMIN_TIP)
+            return
         try:
-            self.config["enable_end_notifications"] = True
-            await self._persist_config()
-            yield event.plain_result("✅ 已开启关播通知")
+            self._set_group_notify(event.unified_msg_origin, "notify_end", True)
+            yield event.plain_result("✅ 已开启本群的关播通知")
         except Exception as e:
             logger.error(f"开启关播通知失败: {e}")
             yield event.plain_result("❌ 开启关播通知失败")
 
     @filter.command("关闭关播通知")
     async def disable_end_notify_cmd(self, event: AstrMessageEvent):
+        if not self._is_admin(event):
+            yield event.plain_result(self._ADMIN_TIP)
+            return
         try:
-            self.config["enable_end_notifications"] = False
-            await self._persist_config()
-            yield event.plain_result("✅ 已关闭关播通知")
+            self._set_group_notify(event.unified_msg_origin, "notify_end", False)
+            yield event.plain_result("✅ 已关闭本群的关播通知（其他群不受影响）")
         except Exception as e:
             logger.error(f"关闭关播通知失败: {e}")
             yield event.plain_result("❌ 关闭关播通知失败")
