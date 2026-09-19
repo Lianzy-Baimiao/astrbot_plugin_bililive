@@ -2,9 +2,10 @@
 
 监测指定B站UP主的开播状态，开播/关播时向你指定的群推送通知。**每个UP主可以各自配置推送到哪些群**，配置界面和聊天命令双向管理，改一处两边同步。
 
-> 🔱 **Fork 说明**：本项目基于原项目 [BB0813/astrbot_plugin_bilibiliobs](https://github.com/BB0813/astrbot_plugin_bilibiliobs) 修改而来。
-> 原项目的 v2.0.0 重写版修掉了旧版的几个硬伤：配置界面看不到订阅、数据乱放导致卸载不清、同一个群开播被多平台重复推送、退订必须记 UID。
-> 本仓库在其基础上继续开发（v2.1.0）：新增按群通知开关、`admin_ids` 管理员鉴权、静音时段、封面图开关、`@all` 精确到群等功能，并修复了扫码登录入口不可达、私聊判定失效等多个问题，详见文末更新日志。
+> 🔱 **源头声明**：本插件的源头项目是 **[astrbot_plugin_bilibiliobs](https://github.com/BB0813/astrbot_plugin_bilibiliobs)**（原作者 **BB0813**），本项目正是在它的代码基础上修改而来，源头与功劳归属原项目。
+>
+> 原插件使用上不太合手，本项目针对它的一些问题做了重写修复：配置界面看不到订阅、数据乱放导致卸载不清、同一个群开播被多平台重复推送、退订必须记 UID 等。
+> 当前版本（v2.1.0）在此基础上继续增强：按群通知开关、`admin_ids` 管理员鉴权、静音时段、封面图开关、`@all` 精确到群，并修复了扫码登录入口不可达、私聊判定失效等问题，详见文末更新日志。
 
 ## 主要特性
 
@@ -97,8 +98,8 @@
 
 ## 关于
 
-- **本仓库（Fork 修改版）**: [Lianzy-Baimiao/astrbot_plugin_bililive](https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive)
-- **原项目**: [BB0813/astrbot_plugin_bilibiliobs](https://github.com/BB0813/astrbot_plugin_bilibiliobs)（作者 BB0813）
+- **源头项目（原作者 BB0813）**: [BB0813/astrbot_plugin_bilibiliobs](https://github.com/BB0813/astrbot_plugin_bilibiliobs)
+- **本项目（基于源头项目修改）**: [Lianzy-Baimiao/astrbot_plugin_bililive](https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive)
 - **当前版本**: 2.1.0
 
 ### 2.1.0 更新（Fork 修改版）
