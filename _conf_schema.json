@@ -6,6 +6,13 @@
     "default": [],
     "hint": "格式: UID=目标[,目标...]。每个『目标』有三种写法(短的优先): ①裸群号 777777777 (按下面『默认平台』补全); ②平台id:群号 napcat:777777777 (推荐，可多平台混用); ③完整 napcat:GroupMessage:777777777。目标后加 @all 只对该群开播@全体: napcat:777777777@all；行尾加 | at_all 对整行所有群@全体(旧写法，自动兼容)。以 # 开头的行是注释，格式错误的行会被忽略并在日志与 /开播监测状态 中提示。也可在群里用 /订阅 <UID> 直接把当前群加进来。"
   },
+  "dynamic_subscriptions": {
+    "description": "动态订阅列表（每行一个UP主）",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": [],
+    "hint": "推送该UP主的B站空间动态（投稿视频/图文/专栏/转发/音频/纯文字），写法与『订阅列表』完全一致: UID=目标[,目标...]，目标后加 @all 只对该群 @全体，行尾加 | at_all 对整行所有群 @全体。与『订阅列表』互相独立，可只订动态不订开播。注意动态接口风控较严，建议配 bilibili_cookie；也可在群里用 /动态订阅 <UID> 直接把当前群加进来。"
+  },
   "default_platform": {
     "description": "裸群号归属的平台id（可留空自动探测）",
     "type": "string",
@@ -72,5 +79,65 @@
     "type": "string",
     "default": "⚫ {uname} 已结束直播",
     "hint": "占位符: {uname} UP主名称, {room_id} 直播间号。"
+  },
+  "dynamic_check_interval": {
+    "description": "动态检查间隔（秒）",
+    "type": "int",
+    "default": 45,
+    "hint": "检查UP主动态的间隔。实际生效范围钳制在 30-600 秒；动态接口风控比开播状态接口严格得多，单UP之间还会自动拉开 2 秒节奏、被限流时自动退避（最多拉长到 900 秒）。UP多时建议 120 秒以上。"
+  },
+  "dynamic_notify_template": {
+    "description": "动态通知模板",
+    "type": "string",
+    "default": "📢 {uname} {action}\n{title}\n🔗 {url}",
+    "hint": "占位符: {uname} UP主名称, {action} 动作(如『投稿了视频』『发布了图文动态』), {title} 标题, {text} 正文, {url} 动态落地页。写错占位符不影响推送（原样保留）。图片会自动附带(最多3张)，无需在模板里写。"
+  },
+  "dyn_notify_video": {
+    "description": "推送·投稿视频",
+    "type": "bool",
+    "default": true,
+    "hint": "UP主投稿视频/合集时通知，附封面图。"
+  },
+  "dyn_notify_draw": {
+    "description": "推送·图文动态",
+    "type": "bool",
+    "default": true,
+    "hint": "UP主发布图文/相簿动态时通知，最多带3张图。"
+  },
+  "dyn_notify_article": {
+    "description": "推送·专栏文章",
+    "type": "bool",
+    "default": true,
+    "hint": "UP主投稿专栏文章时通知。"
+  },
+  "dyn_notify_word": {
+    "description": "推送·纯文字动态",
+    "type": "bool",
+    "default": true,
+    "hint": "UP主发布纯文字动态时通知。"
+  },
+  "dyn_notify_forward": {
+    "description": "推送·转发动态",
+    "type": "bool",
+    "default": true,
+    "hint": "UP主转发别人动态时通知；原动态已被删除会标注『已删除或不可见』。"
+  },
+  "dyn_notify_live": {
+    "description": "推送·动态里的直播卡片（通常留关）",
+    "type": "bool",
+    "default": false,
+    "hint": "动态专区里的『正在直播』卡片。『订阅列表』的开播监测更及时，两处都开容易重复通知，默认关闭。"
+  },
+  "dyn_notify_music": {
+    "description": "推送·音频",
+    "type": "bool",
+    "default": true,
+    "hint": "UP主投稿音频时通知。"
+  },
+  "dyn_notify_other": {
+    "description": "推送·其他类型动态",
+    "type": "bool",
+    "default": false,
+    "hint": "投票、播单等归类外的动态。遇到新类型不想漏可以打开。"
   }
 }
