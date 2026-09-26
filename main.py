@@ -15,6 +15,13 @@ from .bili_login import BilibiliLoginManager
 from . import subscription as sub
 from . import dynamic_report
 from . import wbi
+from .groups import (
+    SOURCE_API,
+    GroupNameResolver,
+    parse_group_info,
+    parse_group_list,
+)
+from .page import BiliLivePageController
 
 PLUGIN_NAME = "astrbot_plugin_bililive"
 
@@ -26,7 +33,7 @@ class _SafeFormatDict(dict):
         return "{" + key + "}"
 
 
-@register("astrbot_plugin_bililive", "BB0813", "B站UP主开播监测与动态推送插件", "2.2.0",
+@register("astrbot_plugin_bililive", "BB0813", "B站UP主开播监测与动态推送插件", "2.3.5",
           "https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive")
 class BiliLivePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -71,6 +78,15 @@ class BiliLivePlugin(Star):
             admin_targets_provider=self._admin_notify_targets,
         )
         # initialize() 由框架在加载插件后自动 await（官方生命周期钩子）
+
+        # Web 面板：群号 → 群名缓存（OneBot 事件不带群名，自己攒）+ 接口注册
+        # 注意：文件名用 group_names.json，**不能**用 groups.json —— 那个已被上面的
+        # group_settings_file（按群通知开关）占用，同名会两套数据互相覆盖、双双丢失。
+        self.groups = GroupNameResolver(os.path.join(self.data_dir, "group_names.json"))
+        self.groups.load()
+        self._group_name_tasks: Dict[str, asyncio.Task] = {}
+        self.page = BiliLivePageController(context, self)
+        self.page.register_routes()
 
     # ---------- 配置读取小工具 ----------
     def _cfg(self, key: str, default=None):
@@ -129,28 +145,58 @@ class BiliLivePlugin(Star):
     def default_platform(self) -> str:
         """裸群号补全用的平台『实例id』。
 
-        配置留空时自动探测第一个已加载平台的 id（send_message 按 id 匹配）。
-        探测不到才回落 aiocqhttp。
+        AstrBot 的 send_message 按**实例 id** 匹配平台，所以配置里若填了适配器类型名
+        （aiocqhttp / qq_official），这里会映射到同类型的第一个实例 id；都探不到才回落
+        aiocqhttp（与旧行为一致）。
         """
-        configured = str(self._cfg("default_platform", "") or "").strip()
-        if configured:
-            return configured
-        ids = self._platform_ids()
-        return ids[0] if ids else "aiocqhttp"
+        return self._bare_id_platform()
 
     def _platform_ids(self) -> List[str]:
         """当前已加载平台的实例 id 列表；取不到返回空。"""
-        try:
-            insts = self.context.platform_manager.platform_insts
-        except Exception:
-            return []
-        ids = []
-        for p in insts or []:
+        return [pid for pid, _ptype in self._platform_instances()]
+
+    def _platform_instances(self) -> List[tuple]:
+        """当前已加载平台的 (实例id, 适配器类型名) 列表；取不到返回空。
+
+        兼容两种取法：老版本 platform_manager.platform_insts，以及带 get_insts() 的版本。
+        """
+        for get in (
+            lambda: self.context.platform_manager.platform_insts,
+            lambda: self.context.get_platform_insts(),
+            lambda: self.context.platform_manager.get_insts(),
+        ):
             try:
-                ids.append(str(p.meta().id))
+                insts = list(get() or [])
             except Exception:
                 continue
-        return ids
+            out = []
+            for p in insts:
+                try:
+                    meta = p.meta()
+                    out.append((str(meta.id), str(meta.name)))
+                except Exception:
+                    continue
+            if out:
+                return out
+        return []
+
+    def _bare_id_platform(self) -> str:
+        """把「裸群号」挂到哪个平台实例 id 上。"""
+        configured = str(self._cfg("default_platform", "") or "").strip()
+        insts = self._platform_instances()
+        ids = [pid for pid, _ in insts]
+        if configured:
+            if not ids or configured in ids:
+                return configured
+            # 配置里填的是适配器类型名 → 映射到同类型的第一个实例 id
+            for pid, ptype in insts:
+                if ptype == configured:
+                    return pid
+            return configured  # 都映射不上就尊重用户填的值（至少行为可预期）
+        for pid, ptype in insts:
+            if ptype == "aiocqhttp":
+                return pid
+        return ids[0] if ids else "aiocqhttp"
 
     # ---------- 订阅数据：config 是唯一真相源 ----------
     def _load_subs(self) -> Dict[str, Dict]:
@@ -229,6 +275,146 @@ class BiliLivePlugin(Star):
                 base = os.path.join(os.path.expanduser("~"), ".astrbot", "plugin_data", PLUGIN_NAME)
         os.makedirs(base, exist_ok=True)
         return base
+
+    # ---------- Web 面板：群名与群列表 ----------
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_any_message(self, event: AstrMessageEvent):
+        """任何消息都顺手记一下群名（面板要按群名选推送目标）。不产出回复。"""
+        try:
+            self._remember_group(event)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"记录群名失败: {e}")
+
+    @staticmethod
+    def _event_group_name(event: AstrMessageEvent) -> str:
+        """事件自带的群名（Telegram / Discord 等平台有，OneBot 没有）。"""
+        group = getattr(getattr(event, "message_obj", None), "group", None)
+        return str(getattr(group, "group_name", "") or "").strip()
+
+    @staticmethod
+    def _event_platform_id(event: AstrMessageEvent) -> str:
+        getter = getattr(event, "get_platform_id", None)
+        if callable(getter):
+            try:
+                return str(getter() or "")
+            except Exception:  # noqa: BLE001
+                pass
+        meta = getattr(event, "platform_meta", None)
+        return str(getattr(meta, "id", "") or "")
+
+    @staticmethod
+    def _event_group_id(event: AstrMessageEvent) -> str:
+        try:
+            return str(event.get_group_id() or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _remember_group(self, event: AstrMessageEvent) -> None:
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        if not umo:
+            return
+        gid = self._event_group_id(event)
+        self.groups.remember(
+            umo,
+            group_id=gid,
+            group_name=self._event_group_name(event),
+            platform_id=self._event_platform_id(event),
+        )
+        if gid and not self.groups.name_of(umo):
+            self._schedule_group_name_lookup(event, umo, gid)
+
+    def _schedule_group_name_lookup(self, event: AstrMessageEvent, umo: str, gid: str) -> None:
+        """首次见到某个群时后台问一次 get_group_info（不阻塞消息处理）。"""
+        if umo in self._group_name_tasks:
+            return
+        client = getattr(event, "bot", None) or getattr(event, "client", None)
+        if client is None or not callable(getattr(client, "call_action", None)):
+            return
+        try:
+            task = asyncio.create_task(
+                self._learn_group_name(client, umo, gid, self._event_platform_id(event))
+            )
+        except RuntimeError:  # 没有运行中的事件循环
+            return
+        self._group_name_tasks[umo] = task
+        task.add_done_callback(lambda _t, key=umo: self._group_name_tasks.pop(key, None))
+
+    async def _learn_group_name(self, client, umo: str, gid: str, platform_id: str) -> None:
+        try:
+            result = await client.call_action(
+                "get_group_info", group_id=int(gid) if str(gid).isdigit() else gid
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"查询群 {gid} 名称失败: {e}")
+            return
+        info = parse_group_info(result)
+        name = str(info.get("group_name") or "").strip()
+        if not name:
+            return
+        self.groups.remember(
+            umo,
+            group_id=gid or str(info.get("group_id") or ""),
+            group_name=name,
+            platform_id=platform_id,
+            member_count=info.get("member_count"),
+            source=SOURCE_API,
+        )
+
+    @staticmethod
+    def _inst_platform_id(inst) -> str:
+        meta = getattr(inst, "meta", None)
+        if callable(meta):
+            try:
+                return str(getattr(meta(), "id", "") or "")
+            except Exception:  # noqa: BLE001
+                pass
+        config = getattr(inst, "config", None)
+        if isinstance(config, dict):
+            return str(config.get("id") or "")
+        return ""
+
+    def _platform_clients(self):
+        """列出 (平台实例 id, 客户端对象)；取不到平台管理器时一个都不返回。"""
+        manager = getattr(self.context, "platform_manager", None)
+        getter = getattr(manager, "get_insts", None)
+        if not callable(getter):
+            return
+        try:
+            insts = list(getter() or [])
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"取平台实例失败: {e}")
+            return
+        for inst in insts:
+            client = None
+            get_client = getattr(inst, "get_client", None)
+            if callable(get_client):
+                try:
+                    client = get_client()
+                except Exception:  # noqa: BLE001
+                    client = None
+            if client is None:
+                client = getattr(inst, "bot", None) or getattr(inst, "client", None)
+            if client is not None:
+                yield self._inst_platform_id(inst), client
+
+    async def refresh_group_names(self, force: bool = False, interval: int = 300) -> int:
+        """去平台要一遍群列表（OneBot get_group_list）补齐群名，返回有变化的群数。"""
+        if not force and not self.groups.needs_refresh(interval):
+            return 0
+        changed = 0
+        for platform_id, client in self._platform_clients():
+            action = getattr(client, "call_action", None)
+            if not callable(action):
+                continue
+            try:
+                result = await action("get_group_list")
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"平台 {platform_id or '?'} 取群列表失败: {e}")
+                continue
+            changed += self.groups.merge_api_groups(platform_id, parse_group_list(result))
+        self.groups.mark_refreshed()
+        return changed
 
     # ---------- 按群通知开关（groups.json） ----------
     def _load_group_settings(self):
@@ -488,6 +674,13 @@ class BiliLivePlugin(Star):
     async def terminate(self):
         try:
             logger.info("正在停止B站开播监测插件...")
+            for task in list(self._group_name_tasks.values()):
+                task.cancel()
+            self._group_name_tasks.clear()
+            try:
+                self.groups.flush()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"退出前保存群名缓存失败: {e}")
             self._save_state()
             await self._cleanup_resources()
             logger.info("B站开播监测插件已完全停止")
@@ -940,6 +1133,36 @@ class BiliLivePlugin(Star):
     def _should_notify_dynamic(self, parsed: Dict, toggles: Dict[str, bool]) -> bool:
         return dynamic_report.should_notify(parsed.get("kind", "other"), toggles)
 
+    # ---------- 推送目标路由（send_message 按平台实例 id 匹配）----------
+    def _route_umo(self, umo: str) -> str:
+        """把目标 umo 的平台段从适配器类型名换成实例 id。
+
+        send_message 按平台**实例 id** 精确匹配：配置里若写的是适配器类型名
+        （aiocqhttp / qq_official）而实例 id 是别的（napcat / 自定义），不改写就会
+        静默丢消息。已是实例 id、裸群号、或认不出来的都原样返回。
+        """
+        s = str(umo or "").strip()
+        if ":" not in s:
+            return s
+        parts = s.split(":")
+        plat = parts[0].strip()
+        insts = self._platform_instances()
+        if not plat or any(plat == pid for pid, _ in insts):
+            return s
+        for pid, ptype in insts:
+            if ptype == plat:
+                parts[0] = pid
+                return ":".join(parts)
+        return s
+
+    def _target_is_official(self, umo: str) -> bool:
+        """目标是否落在官方 QQ 机器人（qq_official*）上——那边不支持 @全体成员。"""
+        plat = str(umo or "").split(":", 1)[0].strip()
+        for pid, ptype in self._platform_instances():
+            if plat in (pid, ptype):
+                return "qq_official" in (ptype or "")
+        return "qq_official" in plat
+
     # ---------- 通知 ----------
     def _build_message_chain(self, template: str, uname: str, title: str, room_id, cover: str,
                              at_all: bool = False) -> MessageChain:
@@ -964,9 +1187,13 @@ class BiliLivePlugin(Star):
             cover = status_info.get("cover", "")
             template = self._cfg("live_notify_template",
                                  "🔴 {uname} 开播啦！\n📺 直播标题: {title}\n🔗 直播间: https://live.bilibili.com/{room_id}")
-            chain = self._build_message_chain(template, uname, title, room_id, cover, at_all)
-            await self.context.send_message(origin, chain)
-            logger.info(f"开播通知已发送: {uname} -> {origin}")
+            target = self._route_umo(origin)
+            chain = self._build_message_chain(
+                template, uname, title, room_id, cover,
+                at_all and not self._target_is_official(target),
+            )
+            await self.context.send_message(target, chain)
+            logger.info(f"开播通知已发送: {uname} -> {target}")
         except Exception as e:
             logger.error(f"发送开播通知失败: {e}")
 
@@ -974,15 +1201,19 @@ class BiliLivePlugin(Star):
         try:
             if not self.enable_notifications or not self.enable_end_notifications:
                 return
+            # notify 是本群总开关（/关闭通知 = 一关全关，含关播）；关播还要再过 notify_end
+            if not self._group_notify_enabled(origin, "notify"):
+                return
             if not self._group_notify_enabled(origin, "notify_end"):
                 return
             uname = status_info.get("uname", "未知UP主")
             room_id = status_info.get("room_id", 0)
             cover = status_info.get("cover", "")
             template = self._cfg("end_notify_template", "⚫ {uname} 已结束直播")
+            target = self._route_umo(origin)
             chain = self._build_message_chain(template, uname, "", room_id, cover, False)
-            await self.context.send_message(origin, chain)
-            logger.info(f"关播通知已发送: {uname} -> {origin}")
+            await self.context.send_message(target, chain)
+            logger.info(f"关播通知已发送: {uname} -> {target}")
         except Exception as e:
             logger.error(f"发送关播通知失败: {e}")
 
@@ -1020,11 +1251,17 @@ class BiliLivePlugin(Star):
             uname = parsed.get("uname", "未知UP主")
             template = self._cfg("dynamic_notify_template",
                                  "📢 {uname} {action}\n{title}\n🔗 {url}")
-            # @全体只在视频/直播卡片两类生效：图文、专栏也@全体就成刷屏了
-            chain = self._build_dynamic_chain(
-                template, parsed, at_all and parsed.get("kind") in ("video", "live"))
-            await self.context.send_message(origin, chain)
-            logger.info(f"动态通知已发送: {uname}({parsed.get('kind')}) -> {origin}")
+            target = self._route_umo(origin)
+            # @全体只在视频/直播卡片两类生效（图文、专栏也@全体就成刷屏了）；
+            # 官方 QQ 机器人不支持 @全体，命中就别加，免得整条推送发失败。
+            want_at_all = (
+                at_all
+                and parsed.get("kind") in ("video", "live")
+                and not self._target_is_official(target)
+            )
+            chain = self._build_dynamic_chain(template, parsed, want_at_all)
+            await self.context.send_message(target, chain)
+            logger.info(f"动态通知已发送: {uname}({parsed.get('kind')}) -> {target}")
         except Exception as e:
             logger.error(f"发送动态通知失败: {e}")
 

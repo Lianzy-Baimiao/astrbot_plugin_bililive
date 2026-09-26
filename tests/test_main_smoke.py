@@ -73,9 +73,15 @@ def _install_astrbot_stubs():
 
         class EventMessageType:
             PRIVATE_MESSAGE = "private"
+            GROUP_MESSAGE = "group"
+            ALL = "all"
 
         @staticmethod
         def command(_name=None):
+            return lambda fn: fn
+
+        @staticmethod
+        def event_message_type(_type=None):
             return lambda fn: fn
 
         @staticmethod
@@ -250,6 +256,31 @@ def test_send_dynamic_notification_gating():
     plugin.config["enable_notifications"] = False
     asyncio.run(plugin.send_dynamic_notification(_parsed("video"), GROUP, True))
     assert len(sent) == 2
+
+
+def test_send_end_notification_respects_group_master_switch():
+    """关播通知也要过本群总开关 notify：/关闭通知（notify=False）应连关播一起停。"""
+    sent = []
+
+    class _Ctx:
+        async def send_message(self, origin, chain):
+            sent.append((origin, chain))
+
+    info = {"uname": "UP", "room_id": 1, "cover": ""}
+    plugin = _make_plugin({"enable_notifications": True, "enable_end_notifications": True})
+    plugin.context = _Ctx()
+
+    # 默认全开：关播应发
+    asyncio.run(plugin.send_end_notification(info, GROUP, False))
+    assert len(sent) == 1
+    # 只关关播：不发
+    plugin.group_settings = {GROUP: {"notify_end": False}}
+    asyncio.run(plugin.send_end_notification(info, GROUP, False))
+    assert len(sent) == 1
+    # /关闭通知（notify=False）：关播也应停（修复点，此前会漏发出去）
+    plugin.group_settings = {GROUP: {"notify": False}}
+    asyncio.run(plugin.send_end_notification(info, GROUP, False))
+    assert len(sent) == 1
 
 
 # （运行器在文件末尾：脚本自上而下执行，所有 test_* 必须先定义好）

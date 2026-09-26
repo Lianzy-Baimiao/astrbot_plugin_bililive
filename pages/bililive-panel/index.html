@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>B站开播监测</title>
+<!--
+  显式声明桥接 SDK：AstrBot 会把这个 src 重写成带 asset_token 的真实地址。
+  整个页面里除这一处外不要再出现那个脚本地址（连注释都不行）。
+-->
+<script src="/api/plugin/page/bridge-sdk.js"></script>
+<style>
+:root {
+  --bg: #f5f7fa; --card: #ffffff; --border: #e5e7eb; --text: #1f2937;
+  --text2: #6b7280; --text3: #9ca3af; --accent: #3b82f6;
+  --accent-soft: rgba(59, 130, 246, 0.1); --danger: #ef4444;
+  --danger-soft: rgba(239, 68, 68, 0.1); --ok: #22c55e; --ok-soft: rgba(34, 197, 94, 0.12);
+  --warn: #f59e0b; --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --radius: 10px;
+}
+html[data-theme="dark"] {
+  --bg: #17181c; --card: #1f2126; --border: #32353c; --text: #e5e7eb;
+  --text2: #9ca3af; --text3: #6b7280; --accent: #60a5fa;
+  --accent-soft: rgba(96, 165, 250, 0.14); --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.14); --ok: #4ade80; --ok-soft: rgba(74, 222, 128, 0.14);
+  --warn: #fbbf24; --shadow: none;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px; line-height: 1.6;
+}
+.wrap { max-width: 1180px; margin: 0 auto; }
+.topbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.topbar h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--ok-soft); color: var(--ok); }
+.pill.off { background: var(--danger-soft); color: var(--danger); }
+.pill.warn { background: rgba(245, 158, 11, 0.14); color: var(--warn); }
+.spacer { flex: 1 1 auto; }
+.stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.stat { flex: 1 1 130px; background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 14px; box-shadow: var(--shadow); }
+.stat .n { font-size: 19px; font-weight: 600; }
+.stat .l { font-size: 12px; color: var(--text2); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 14px; margin-bottom: 14px; }
+.card h2 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.field.grow { flex: 1 1 200px; min-width: 0; }
+label { font-size: 12px; color: var(--text2); }
+input[type="text"], select, textarea {
+  font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; width: 100%; outline: none;
+}
+input[type="text"]:focus, select:focus { border-color: var(--accent); }
+input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+button { font: inherit; cursor: pointer; border-radius: 8px; padding: 7px 14px;
+  border: 1px solid var(--border); background: var(--card); color: var(--text); white-space: nowrap; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--danger); border-color: var(--danger-soft); }
+button.link { border: none; background: none; color: var(--accent); padding: 2px 4px; }
+button.link.danger { color: var(--danger); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.hint { font-size: 12px; color: var(--text2); margin: 6px 0; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+th { font-size: 12px; color: var(--text2); font-weight: 500; white-space: nowrap; }
+tbody tr:hover { background: var(--accent-soft); }
+td.acts, th.acts { text-align: right; white-space: nowrap; }
+.tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent); }
+.tag.off { background: var(--danger-soft); color: var(--danger); }
+.tag.warn { background: rgba(245, 158, 11, .16); color: var(--warn); }
+.empty { text-align: center; color: var(--text2); padding: 18px; }
+.list { max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.list-item { display: flex; gap: 10px; align-items: center; padding: 8px 10px;
+  border-bottom: 1px solid var(--border); }
+.list-item:last-child { border-bottom: none; }
+.list-item .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gallery { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.thumb { width: 150px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg); }
+.thumb img { width: 100%; height: 190px; object-fit: cover; display: block; }
+.thumb .cap { font-size: 11px; color: var(--text2); padding: 6px 8px; word-break: break-all; }
+.pick-list { max-height: 46vh; overflow: auto; margin-top: 10px;
+  border: 1px solid var(--border); border-radius: 8px; }
+.pick-item { display: flex; gap: 10px; align-items: center; padding: 9px 12px;
+  cursor: pointer; border-bottom: 1px solid var(--border); }
+.pick-item:last-child { border-bottom: none; }
+.pick-item:hover { background: var(--accent-soft); }
+.pick-item .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-item .sub { color: var(--text2); font-size: 12px; white-space: nowrap; }
+.modal-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex;
+  align-items: center; justify-content: center; padding: 18px; z-index: 50; }
+.modal-mask[hidden] { display: none; }
+.modal { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; width: 100%; max-width: 620px; max-height: 88vh; overflow: auto; box-shadow: var(--shadow); }
+.modal h2 { margin-top: 0; }
+.modal-foot { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
+.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(20px);
+  background: #111827; color: #fff; padding: 9px 16px; border-radius: 8px; font-size: 13px;
+  opacity: 0; pointer-events: none; transition: all .2s ease; z-index: 99; max-width: 80vw; }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.err { background: #b91c1c; }
+.tabs { display: flex; gap: 6px; }
+button.tab { padding: 6px 14px; }
+button.tab.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.tag-list { display: flex; gap: 6px; flex-wrap: wrap; }
+.tag.at { background: rgba(245, 158, 11, .16); color: var(--warn); }
+.tag.bad { background: var(--danger-soft); color: var(--danger); }
+.tag .plat { opacity: .7; font-size: 10px; }
+.pick-item .at-wrap { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.pick-item .at-wrap label { font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <h1>B站开播监测</h1>
+    <span class="pill" id="runPill">加载中…</span>
+    <span class="spacer"></span>
+    <button id="btnReload">刷新</button>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div class="tabs">
+        <button class="tab on" id="tabLive">开播订阅</button>
+        <button class="tab" id="tabDynamic">动态订阅</button>
+      </div>
+      <div class="row">
+        <button id="btnAddSub">新增 UP 主</button>
+        <button id="btnSaveSubs" class="primary">保存订阅</button>
+      </div>
+    </div>
+    <p class="hint" id="subHint">
+      一行一个 UP 主，后面挂它要推的群。保存后与群里 /订阅、/退订 命令改的是同一份配置。
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th style="width:160px">UP 主 UID</th><th>推送群</th>
+          <th style="width:80px">群数</th><th class="acts">操作</th>
+        </tr></thead>
+        <tbody id="subBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>按群通知开关</h2>
+    <p class="hint">与群里 /开启通知、/关闭通知 等价；没设置过的群默认全开。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>群</th><th style="width:90px">开播</th>
+          <th style="width:90px">关播</th><th style="width:90px">动态</th>
+        </tr></thead>
+        <tbody id="notifyBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h2>诊断</h2>
+      <div class="row">
+        <span class="hint" id="diagHint"></span>
+        <button id="btnDedupe">整理重复与失效写法</button>
+      </div>
+    </div>
+    <div class="list" id="diag"></div>
+    <p class="hint">
+      点「整理重复与失效写法」会做两件事并立刻写回配置：
+      <b>①</b> 把前缀不是已加载平台实例的写法改写到同类型实例上（例如配置里填了 <code>aiocqhttp</code>
+      但实际实例叫 <code>napcat</code>，这种写法发不出去）；
+      <b>②</b> 同一个群号有多种写法时只留一个（优先留能发出去的）。不会动别的订阅。
+    </p>
+  </div>
+</div>
+
+<div class="modal-mask" id="subMask" hidden>
+  <div class="modal">
+    <h2 id="subTitle">新增 UP 主</h2>
+    <div class="field">
+      <label for="subUid">UP 主 UID（纯数字，可从空间链接 space.bilibili.com/<b>UID</b> 取）</label>
+      <input type="text" id="subUid" placeholder="例：111111111">
+    </div>
+    <div class="row">
+      <div class="field grow">
+        <label for="subSearch">搜索群名 / 群号</label>
+        <input type="text" id="subSearch" placeholder="例：魔兽 或 339466990">
+      </div>
+      <button id="btnSubRefresh">刷新群列表</button>
+    </div>
+    <div class="pick-list" id="subGroups"></div>
+    <div class="modal-foot">
+      <span class="hint" id="subErr" style="margin-right:auto"></span>
+      <button id="btnSubOk" class="primary">确定</button>
+      <button id="subCancel">取消</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="modal-mask" id="modalMask" hidden>
+  <div class="modal">
+    <h2 id="modalTitle"></h2>
+    <p id="modalMsg" style="white-space:pre-line;color:var(--muted,#9aa)"></p>
+    <input id="modalInput" type="text" hidden
+      style="width:100%;box-sizing:border-box;padding:6px 8px;margin-top:6px">
+    <div class="modal-foot">
+      <button class="primary" id="modalOk">确定</button>
+      <button id="modalCancel">取消</button>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+
+
+  function byId(id) { return document.getElementById(id); }
+
+  var toastTimer = null;
+  function toast(msg, isErr) {
+    var el = byId("toast");
+    el.textContent = String(msg || "");
+    el.className = "show" + (isErr ? " err" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.className = ""; }, 3200);
+  }
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // 面板跑在 AstrBot 仪表盘的 iframe 里，浏览器会屏蔽 window.prompt/confirm，
+  // 所以用页内弹窗替代（否则确认框点了没反应）。
+  function _modal(opts) {
+    return new Promise(function (resolve) {
+      var mask = byId("modalMask");
+      var input = byId("modalInput");
+      byId("modalTitle").textContent = opts.title || "";
+      byId("modalMsg").textContent = opts.message || "";
+      input.hidden = !opts.prompt;
+      if (opts.prompt) { input.value = opts.value || ""; }
+      mask.hidden = false;
+      if (opts.prompt) { input.focus(); input.select(); }
+      function done(val) {
+        mask.hidden = true;
+        byId("modalOk").onclick = null;
+        byId("modalCancel").onclick = null;
+        input.onkeydown = null;
+        resolve(val);
+      }
+      byId("modalOk").onclick = function () { done(opts.prompt ? input.value : true); };
+      byId("modalCancel").onclick = function () { done(opts.prompt ? null : false); };
+      input.onkeydown = function (e) {
+        if (e.key === "Enter") { e.preventDefault(); done(input.value); }
+        else if (e.key === "Escape") { e.preventDefault(); done(null); }
+      };
+    });
+  }
+  function promptModal(title, message, value) {
+    return _modal({ prompt: true, title: title, message: message, value: value || "" });
+  }
+  function confirmModal(message, title) {
+    return _modal({ prompt: false, title: title || "确认", message: message });
+  }
+
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(0) + " KB";
+    return n + " B";
+  }
+
+  // 后端统一返回 {status, message, data}；status 不是 ok 就抛出 message。
+  function unwrap(resp) {
+    if (resp && typeof resp === "object" && "status" in resp) {
+      if (String(resp.status).toLowerCase() !== "ok") {
+        throw new Error(resp.message || "请求失败");
+      }
+      return resp.data || {};
+    }
+    return resp || {};
+  }
+
+  var _bridgeReady = null;
+  function waitForBridge(timeoutMs) {
+    if (_bridgeReady) return _bridgeReady;
+    var deadline = Date.now() + (timeoutMs || 8000);
+    _bridgeReady = new Promise(function (resolve, reject) {
+      (function poll() {
+        var bridge = window.AstrBotPluginPage;
+        if (bridge) {
+          var done = function () { resolve(bridge); };
+          if (typeof bridge.ready === "function") {
+            Promise.resolve(bridge.ready()).then(done, done);
+          } else {
+            done();
+          }
+          return;
+        }
+        if (Date.now() > deadline) {
+          _bridgeReady = null;
+          reject(new Error("面板桥接不可用，请在 AstrBot WebUI 里打开本页面"));
+          return;
+        }
+        setTimeout(poll, 32);
+      })();
+    });
+    return _bridgeReady;
+  }
+
+  function apiGet(path, params) {
+    return waitForBridge().then(function (bridge) {
+      return bridge.apiGet(path, params || {}).then(unwrap);
+    });
+  }
+
+  function apiPost(path, body) {
+    return waitForBridge().then(function (bridge) {
+      return bridge.apiPost(path, body || {}).then(unwrap);
+    });
+  }
+
+  function fail(err) { toast((err && err.message) || "操作失败", true); }
+
+  function initTheme() {
+    var params = new URLSearchParams(window.location.search);
+    var v = params.get("theme");
+    var dark = v === "dark" || params.get("isDark") === "true";
+    if (!v && params.get("isDark") === null) {
+      try {
+        dark = localStorage.getItem("astrbot_plugin_theme_is_dark") === "true";
+      } catch (e) { /* localStorage 被禁时用亮色 */ }
+    }
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    return dark;
+  }
+
+
+  var state = {
+    meta: {},
+    status: {},
+    kind: "live",            // 当前 tab：live / dynamic
+    subs: { live: { rows: [] }, dynamic: { rows: [] } },
+    groups: [],              // 候选群：{value,label,group_id,group_name,source}
+    notify: [],
+    editing: null,           // {uid, targets:{umo: at_all_bool}}，null = 新增
+    modalPicked: {}          // 弹窗里勾选的群：umo -> true
+  };
+
+  function kindLabel(kind) {
+    return kind === "dynamic" ? "动态订阅" : "开播订阅";
+  }
+
+  // ---------- 渲染：状态 ----------
+
+  function renderStatus() {
+    var st = state.status || {};
+    var pill = byId("runPill");
+    if (!st.session_ok) {
+      pill.textContent = "HTTP 会话异常";
+      pill.className = "pill off";
+    } else if (st.monitor_running) {
+      pill.textContent = "监控运行中";
+      pill.className = "pill";
+    } else {
+      pill.textContent = "监控未启动";
+      pill.className = "pill warn";
+    }
+    var live = st.check_interval + " 秒" + (st.backoff_live ? " → 退避 " + st.current_interval + " 秒" : "");
+    var dyn = st.dynamic_check_interval + " 秒" + (st.backoff_dynamic ? " → 退避 " + st.dyn_current_interval + " 秒" : "");
+    byId("stats").innerHTML = [
+      ['<div class="stat"><div class="n">', st.monitors || 0, ' / ', st.max_monitors || 0, '</div><div class="l">监控 UP 主</div></div>'],
+      ['<div class="stat"><div class="n">', st.monitor_links || 0, '</div><div class="l">开播群订阅</div></div>'],
+      ['<div class="stat"><div class="n">', st.dyn_monitors || 0, '</div><div class="l">动态 UP 主</div></div>'],
+      ['<div class="stat"><div class="n">', st.dyn_baseline || 0, '</div><div class="l">动态基线</div></div>'],
+      ['<div class="stat"><div class="n">', esc(live), '</div><div class="l">开播检查间隔</div></div>'],
+      ['<div class="stat"><div class="n">', esc(dyn), '</div><div class="l">动态检查间隔</div></div>'],
+      ['<div class="stat"><div class="n">', st.cookie_set ? "已配置" : "匿名", '</div><div class="l">B站 Cookie</div></div>']
+    ].map(function (p) { return p.join(""); }).join("");
+  }
+
+  // ---------- 渲染：订阅矩阵 ----------
+
+  function currentRows() {
+    var box = state.subs[state.kind] || {};
+    return box.rows || [];
+  }
+
+  function renderSubs() {
+    var tb = byId("subBody");
+    byId("tabLive").className = "tab" + (state.kind === "live" ? " on" : "");
+    byId("tabDynamic").className = "tab" + (state.kind === "dynamic" ? " on" : "");
+    var box = state.subs[state.kind] || {};
+    var invalid = box.invalid_lines || [];
+    byId("subHint").innerHTML = "当前：" + esc(kindLabel(state.kind)) +
+      "，共 <b>" + currentRows().length + "</b> 个 UP 主、<b>" + (box.group_links || 0) + "</b> 条群订阅。" +
+      (invalid.length ? ' <span class="tag warn">' + invalid.length + " 行配置无法解析</span>" : "") +
+      " 保存后与群里命令改的是同一份配置。";
+
+    if (!currentRows().length) {
+      tb.innerHTML = '<tr><td colspan="4" class="empty">还没有订阅，点右上角「新增 UP 主」</td></tr>';
+      return;
+    }
+    tb.innerHTML = currentRows().map(function (row, idx) {
+      var tags = (row.targets || []).map(function (t) {
+        var plat = t.platform || String(t.umo).split(":")[0];
+        var bad = t.reachable === false;
+        return '<span class="tag' + (t.at_all ? " at" : "") + (bad ? " bad" : "") +
+          '" title="' + esc(t.umo) + (bad ? "（该平台前缀不在已加载实例里，这条发不出去）" : "") + '">' +
+          esc(t.label || t.umo) + (t.at_all ? " @全体" : "") +
+          ' <span class="plat">' + esc(plat) + "</span>" + (bad ? " ⚠" : "") + "</span>";
+      }).join("") || '<span class="hint">没有目标群（不会推送）</span>';
+      return "<tr>" +
+        '<td><b>' + esc(row.uid) + "</b></td>" +
+        '<td><div class="tag-list">' + tags + "</div></td>" +
+        '<td>' + (row.group_count || 0) + "</td>" +
+        '<td class="acts">' +
+          '<button class="link" data-act="edit-sub" data-idx="' + idx + '">编辑</button>' +
+          '<button class="link danger" data-act="del-sub" data-idx="' + idx + '">删除</button>' +
+        "</td></tr>";
+    }).join("");
+  }
+
+  // ---------- 渲染：通知开关 ----------
+
+  function notifyCell(row, kind, label) {
+    return "<td><label>" + esc(label) + " " +
+      '<input type="checkbox" data-act="notify" data-umo="' + esc(row.umo) +
+      '" data-kind="' + kind + '"' + (row[kind] ? " checked" : "") + "></label></td>";
+  }
+
+  function renderNotify() {
+    var tb = byId("notifyBody");
+    if (!state.notify.length) {
+      tb.innerHTML = '<tr><td colspan="4" class="empty">还没有被订阅引用到的群</td></tr>';
+      return;
+    }
+    tb.innerHTML = state.notify.map(function (row) {
+      var notes = "";
+      if (row.variant_count > 1) {
+        notes += ' <span class="tag warn" title="' + esc((row.umos || []).join("\n")) +
+          '">' + row.variant_count + " 种写法</span>";
+      }
+      if (row.mixed) {
+        notes += ' <span class="tag warn">各写法设置不一致</span>';
+      }
+      return "<tr><td>" + esc(row.label) + notes + "</td>" +
+        notifyCell(row, "notify", "开播") +
+        notifyCell(row, "notify_end", "关播") +
+        notifyCell(row, "notify_dyn", "动态") +
+        "</tr>";
+    }).join("");
+  }
+
+  // ---------- 渲染：诊断 ----------
+
+  function renderDiag() {
+    var st = state.status || {};
+    var items = [];
+    var invalid = st.invalid_lines || {};
+    ["live", "dynamic"].forEach(function (kind) {
+      (invalid[kind] || []).forEach(function (line) {
+        items.push('<div class="list-item"><span class="nm">' + esc(kindLabel(kind)) +
+          "：配置行无法解析 → " + esc(line) + "</span></div>");
+      });
+    });
+    var quiet = st.quiet || {};
+    if (quiet.raw) {
+      items.push('<div class="list-item"><span class="nm">静音时段：' + esc(quiet.raw) +
+        (quiet.valid ? (quiet.active ? "（💤 正在静音）" : "（当前非静音时段）")
+                     : "（⚠️ 格式无效，应为 HH:MM-HH:MM）") + "</span></div>");
+    }
+    var sub = state.meta || {};  // loadSubscriptions 存进来的整包（含 platforms / duplicates）
+    var platforms = sub.platforms || [];
+    var dupCount = sub.duplicate_groups || 0;
+    if (dupCount) {
+      var detail = (sub.duplicates || []).map(function (d) {
+        return esc(kindLabel(d.kind)) + " 群 " + esc(d.group_id) + "：" +
+          esc((d.umos || []).join(" / "));
+      }).join("<br>");
+      items.push('<div class="list-item"><span class="nm">' +
+        '<span class="tag warn">重复群 ' + dupCount + " 组</span> " +
+        "同一个群号被写成了多种平台写法（右边只有一个能真正发出去）：<br>" + detail +
+        "</span></div>");
+    }
+    if (sub.default_platform && platforms.length && platforms.indexOf(sub.default_platform) < 0) {
+      items.push('<div class="list-item"><span class="nm">⚠️ 配置里的「默认平台」是 ' +
+        esc(sub.default_platform) + "，但它不是已加载的平台实例（应是 " +
+        esc(platforms.join(" / ")) + "）。裸群号会被补成这个前缀 → 发不出去；" +
+        "建议在插件配置页清空「默认平台」让它自动探测。</span></div>");
+    }
+    items.push('<div class="list-item"><span class="nm">默认平台：' +
+      esc(st.default_platform || "—") +
+      (st.platforms && st.platforms.length
+        ? "（已加载：" + esc(st.platforms.join(", ")) + "）"
+        : "（还没探测到平台）") + "</span></div>");
+    items.push('<div class="list-item"><span class="nm">全局通知：开播 ' +
+      (st.global_notify && st.global_notify.live ? "✅" : "❌") + " / 关播 " +
+      (st.global_notify && st.global_notify.end ? "✅" : "❌") +
+      "（全局开关在插件配置页改）</span></div>");
+    items.push('<div class="list-item"><span class="nm">群通知开关记录：' +
+      (st.group_settings_count || 0) + " 个群 ｜ 数据目录：" +
+      esc(st.data_dir || "—") + "</span></div>");
+    byId("diag").innerHTML = items.join("");
+  }
+
+  // ---------- 数据加载 ----------
+
+  function loadStatus() {
+    return apiGet("page/status").then(function (d) {
+      state.status = d || {};
+      renderStatus();
+      renderDiag();
+    });
+  }
+
+  function loadSubscriptions() {
+    return apiGet("page/subscriptions").then(function (d) {
+      state.subs.live = d.live || { rows: [] };
+      state.subs.dynamic = d.dynamic || { rows: [] };
+      state.groups = d.groups || [];
+      state.meta = d;
+      renderSubs();
+      renderDiag();
+      var dup = d.duplicate_groups || 0;
+      var dead = 0;
+      ["live", "dynamic"].forEach(function (k) {
+        (((d[k] || {}).rows) || []).forEach(function (row) {
+          (row.targets || []).forEach(function (t) { if (t.reachable === false) dead++; });
+        });
+      });
+      byId("diagHint").textContent = [
+        dup ? "重复群 " + dup + " 组" : "",
+        dead ? "发不出去的写法 " + dead + " 条" : ""
+      ].filter(Boolean).join(" ｜ ");
+      byId("btnDedupe").disabled = !dup && !dead;
+    });
+  }
+
+  function loadNotify() {
+    return apiGet("page/notify").then(function (d) {
+      state.notify = d.rows || [];
+      renderNotify();
+    });
+  }
+
+  function loadAll() {
+    return Promise.all([loadStatus(), loadSubscriptions(), loadNotify()]);
+  }
+
+  // ---------- 订阅编辑 ----------
+
+  function resolveLabel(umo) {
+    for (var i = 0; i < state.groups.length; i++) {
+      if (state.groups[i].value === umo) return state.groups[i].label;
+    }
+    return umo;
+  }
+
+  function openSubModal(idx) {
+    var rows = currentRows();
+    if (idx == null) {
+      state.editing = { uid: "", targets: {}, idx: null };
+      byId("subTitle").textContent = "新增 UP 主（" + kindLabel(state.kind) + "）";
+    } else {
+      var row = rows[idx];
+      if (!row) return;
+      var targets = {};
+      (row.targets || []).forEach(function (t) { targets[t.umo] = !!t.at_all; });
+      state.editing = { uid: row.uid, targets: targets, idx: idx };
+      byId("subTitle").textContent =
+        "编辑 UP 主 " + row.uid + "（" + kindLabel(state.kind) + "）";
+    }
+    byId("subUid").value = state.editing.uid;
+    byId("subSearch").value = "";
+    byId("subErr").textContent = "";
+    byId("subMask").hidden = false;
+    renderSubPicker();
+    byId("subUid").focus();
+  }
+
+  function subCandidateGroups() {
+    // 候选群 = 后端给的全部候选 + 正在编辑的那几个群（后端还没见过的也留着）
+    var rows = {};
+    state.groups.forEach(function (g) { rows[g.value] = g; });
+    var targets = (state.editing && state.editing.targets) || {};
+    Object.keys(targets).forEach(function (umo) {
+      if (!rows[umo]) {
+        rows[umo] = { value: umo, label: resolveLabel(umo), group_name: "", group_id: "" };
+      }
+    });
+    var list = Object.keys(rows).map(function (k) { return rows[k]; });
+    list.sort(function (a, b) {
+      var an = a.group_name || "";
+      var bn = b.group_name || "";
+      if (!an && bn) return 1;
+      if (an && !bn) return -1;
+      return String(a.group_id || a.label).localeCompare(String(b.group_id || b.label));
+    });
+    return list;
+  }
+
+  function renderSubPicker() {
+    var box = byId("subGroups");
+    if (!state.editing) return;
+    var kw = (byId("subSearch").value || "").trim().toLowerCase();
+    var rows = subCandidateGroups().filter(function (g) {
+      if (!kw) return true;
+      return (String(g.label) + " " + (g.group_name || "") + " " + (g.group_id || ""))
+        .toLowerCase().indexOf(kw) >= 0;
+    });
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty">没有匹配的群：点「刷新群列表」，或先在群里说句话</div>';
+      return;
+    }
+    box.innerHTML = rows.map(function (g) {
+      var picked = Object.prototype.hasOwnProperty.call(state.editing.targets, g.value);
+      var at = picked && state.editing.targets[g.value];
+      var sub = [];
+      if (g.group_id) sub.push("群号 " + g.group_id);
+      if (g.variant_count > 1) sub.push(g.variant_count + " 种写法");
+      sub.push(g.source === "referenced" ? "已被订阅" : "机器人所见");
+      return '<div class="pick-item">' +
+        '<input type="checkbox" data-sub-pick="' + esc(g.value) + '"' +
+          (picked ? " checked" : "") + ">" +
+        '<span class="nm">' + esc(g.group_name || g.label) + "</span>" +
+        '<span class="sub">' + esc(sub.join(" · ")) + "</span>" +
+        '<span class="at-wrap"><input type="checkbox" data-sub-at="' + esc(g.value) + '"' +
+          (at ? " checked" : "") + (picked ? "" : " disabled") +
+          "><label>@全体</label></span>" +
+        "</div>";
+    }).join("");
+  }
+
+  function toggleSubPick(umo, checked) {
+    if (!state.editing) return;
+    if (checked) {
+      if (!Object.prototype.hasOwnProperty.call(state.editing.targets, umo)) {
+        state.editing.targets[umo] = false;
+      }
+    } else {
+      delete state.editing.targets[umo];
+    }
+    renderSubPicker();
+  }
+
+  function applySubModal() {
+    if (!state.editing) return;
+    var uid = (byId("subUid").value || "").trim();
+    if (!/^\d+$/.test(uid)) {
+      byId("subErr").textContent = "UID 必须是纯数字";
+      return;
+    }
+    var targets = Object.keys(state.editing.targets).map(function (umo) {
+      return { umo: umo, at_all: !!state.editing.targets[umo], label: resolveLabel(umo) };
+    });
+    var rows = currentRows().slice();
+    var dup = -1;
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i].uid) === uid) { dup = i; }
+    }
+    if (dup >= 0 && dup !== state.editing.idx) {
+      byId("subErr").textContent = "这个 UID 已经在列表里了";
+      return;
+    }
+    var row = { uid: uid, targets: targets, group_count: targets.length };
+    if (state.editing.idx == null) rows.push(row);
+    else rows[state.editing.idx] = row;
+    rows.sort(function (a, b) { return String(a.uid).localeCompare(String(b.uid)); });
+    state.subs[state.kind] = Object.assign({}, state.subs[state.kind], {
+      rows: rows,
+      group_links: rows.reduce(function (n, r) { return n + (r.targets || []).length; }, 0)
+    });
+    byId("subMask").hidden = true;
+    renderSubs();
+    toast("已修改，记得点「保存订阅」");
+  }
+
+  // ---------- 保存与开关 ----------
+
+  function saveSubs() {
+    var btn = byId("btnSaveSubs");
+    btn.disabled = true;
+    var rows = currentRows().map(function (row) {
+      return {
+        uid: row.uid,
+        targets: (row.targets || []).map(function (t) {
+          return { umo: t.umo, at_all: !!t.at_all };
+        })
+      };
+    });
+    apiPost("page/subscriptions/save", { kind: state.kind, rows: rows }).then(function (d) {
+      toast(d && d.lines ? "已保存：" + (d.uids || 0) + " 个 UP 主 → " + state.kind : "已保存");
+      return loadAll();
+    }).catch(fail).then(function () { btn.disabled = false; });
+  }
+
+  function saveNotify(umo, kind, value) {
+    apiPost("page/notify/save", { umo: umo, kind: kind, value: value }).then(function () {
+      for (var i = 0; i < state.notify.length; i++) {
+        if (state.notify[i].umo === umo) state.notify[i][kind] = value;
+      }
+      toast("已保存");
+    }).catch(fail);
+  }
+
+  function dedupeSubs() {
+    confirmModal("整理订阅里的重复与失效写法？会把前缀发不出去的写法改写到同类型实例上，" +
+      "并合并同一个群的多种写法，立刻写回配置。", "整理写法").then(function (ok) {
+      if (!ok) return;
+      var btn = byId("btnDedupe");
+      btn.disabled = true;
+      apiPost("page/subscriptions/dedupe", {}).then(function (d) {
+        toast(d.merged || d.rewritten ? d.message || "已整理" : "没有需要整理的写法");
+        return loadAll();
+      }).catch(fail).then(function () { btn.disabled = false; });
+    });
+  }
+
+  function deleteRow(idx) {
+    var row = currentRows()[idx];
+    if (!row) return;
+    confirmModal("从" + kindLabel(state.kind) + "里删掉 UP 主 " + row.uid + "？", "删除订阅").then(function (ok) {
+      if (!ok) return;
+      var rows = currentRows().slice();
+      rows.splice(idx, 1);
+      state.subs[state.kind] = Object.assign({}, state.subs[state.kind], {
+        rows: rows,
+        group_links: rows.reduce(function (n, r) { return n + (r.targets || []).length; }, 0)
+      });
+      renderSubs();
+      toast("已修改，记得点「保存订阅」");
+    });
+  }
+
+  // ---------- 绑定 & 启动 ----------
+
+  function bind() {
+    byId("btnReload").addEventListener("click", function () {
+      loadAll().then(function () { toast("已刷新"); }).catch(fail);
+    });
+    byId("tabLive").addEventListener("click", function () {
+      state.kind = "live";
+      renderSubs();
+    });
+    byId("tabDynamic").addEventListener("click", function () {
+      state.kind = "dynamic";
+      renderSubs();
+    });
+    byId("btnAddSub").addEventListener("click", function () { openSubModal(null); });
+    byId("btnSaveSubs").addEventListener("click", saveSubs);
+    byId("btnDedupe").addEventListener("click", dedupeSubs);
+
+    byId("subBody").addEventListener("click", function (e) {
+      var el = e.target;
+      if (!el || el.tagName !== "BUTTON") return;
+      var act = el.getAttribute("data-act");
+      var idx = parseInt(el.getAttribute("data-idx"), 10);
+      if (act === "edit-sub") openSubModal(idx);
+      else if (act === "del-sub") deleteRow(idx);
+    });
+
+    byId("subGroups").addEventListener("change", function (e) {
+      var box = e.target;
+      if (!box || box.type !== "checkbox") return;
+      var umo = box.getAttribute("data-sub-pick");
+      if (umo) { toggleSubPick(umo, box.checked); return; }
+      var at = box.getAttribute("data-sub-at");
+      if (at) { toggleSubAt(at, box.checked); }
+    });
+    byId("subSearch").addEventListener("input", renderSubPicker);
+    byId("btnSubRefresh").addEventListener("click", function () {
+      apiGet("page/groups", { refresh: "1" }).then(function (d) {
+        state.groups = d.groups || [];
+        renderSubPicker();
+        toast("群列表已刷新（" + (d.refreshed || 0) + " 个群有更新）");
+      }).catch(fail);
+    });
+    byId("btnSubOk").addEventListener("click", applySubModal);
+    byId("subCancel").addEventListener("click", function () { byId("subMask").hidden = true; });
+
+    byId("notifyBody").addEventListener("change", function (e) {
+      var box = e.target;
+      if (!box || box.type !== "checkbox") return;
+      saveNotify(box.getAttribute("data-umo"), box.getAttribute("data-kind"), box.checked);
+    });
+
+    byId("subMask").addEventListener("click", function (e) {
+      if (e.target === this) this.hidden = true;
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") byId("subMask").hidden = true;
+    });
+  }
+
+  initTheme();
+  bind();
+  byId("subBody").innerHTML = '<tr><td colspan="4" class="empty">正在连接面板…</td></tr>';
+  waitForBridge()
+    .then(loadAll)
+    .catch(function (err) {
+      byId("subBody").innerHTML = '<tr><td colspan="4" class="empty">' +
+        esc((err && err.message) || "加载失败") + "</td></tr>";
+      fail(err);
+    });
+})();
+</script>
+</body>
+</html>

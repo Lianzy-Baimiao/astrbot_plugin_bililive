@@ -3,6 +3,7 @@ desc: B站UP主开播监测 + 动态推送插件，每个UP主可各自配置推
 short_desc: B站开播监测 + 动态推送
 display_name: B站开播监测
 author: BB0813
-version: 2.2.0
+version: 2.3.5
 repo: https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive
-astrbot_version: ">=4.0.0"
+# 插件 WebUI 自定义页面（Plugin Pages）能力在 AstrBot v4.24.1 正式引入
+astrbot_version: ">=4.24.1"
