@@ -286,12 +286,253 @@ def test_send_end_notification_respects_group_master_switch():
 # （运行器在文件末尾：脚本自上而下执行，所有 test_* 必须先定义好）
 
 
-# ---------------- 基础健全性 ----------------
+# ---------------- 置顶评论盯梢 ----------------
 
+# 真实验证过：BV1V9aq6CEeR -> av 117346039501000
+WATCH_BV = "BV1V9aq6CEeR"
+WATCH_AID = 117346039501000
+WATCH_UID = "2081532576"
+
+
+def _video_item(id_str, bvid, title="攻略视频"):
+    """最小可解析的投稿视频动态条目（带 bvid，供评论盯梢换算 av）。"""
+    return {
+        "id_str": id_str,
+        "type": "DYNAMIC_TYPE_AV",
+        "modules": {
+            "module_author": {"name": "魔兽阿落", "pub_ts": 1},
+            "module_dynamic": {
+                "desc": {"text": ""},
+                "major": {"type": "MAJOR_TYPE_ARCHIVE",
+                          "archive": {"title": title, "bvid": bvid,
+                                      "cover": "https://i0.hdslb.com/c.jpg",
+                                      "jump_url": f"//www.bilibili.com/video/{bvid}"}},
+            },
+        },
+    }
+
+
+def _make_comment_plugin(config=None):
+    plugin = _make_plugin(config)
+    plugin.dyn_comment_watch = {}
+    plugin.cmt_skip_until = {}
+    plugin.up_names = {}
+    plugin.comment_pushes = []
+
+    async def _rec_comment(uname, title, pinned, origin, at_all):
+        plugin.comment_pushes.append(
+            {"uname": uname, "title": title, "pinned": pinned,
+             "origin": origin, "at_all": at_all})
+
+    plugin.send_comment_notification = _rec_comment
+    return plugin
+
+
+def test_comment_watch_registered_only_for_whitelisted_video():
+    plugin = _make_comment_plugin({"comment_watch_uids": [WATCH_UID]})
+    plugin.dyn_last_ids[WATCH_UID] = OLD_ID  # 有基线才会真的推 + 登记
+    groups = _targets((GROUP, True))
+    items = [_video_item(NEW_ID_1, WATCH_BV)]
+    asyncio.run(plugin._dispatch_dynamics(WATCH_UID, items, groups,
+                                          plugin.dynamic_notify_toggles))
+    key = f"{WATCH_UID}:{WATCH_AID}"
+    assert key in plugin.dyn_comment_watch, "白名单 UP 的视频应登记评论盯梢"
+    entry = plugin.dyn_comment_watch[key]
+    assert entry["aid"] == WATCH_AID and entry["bvid"] == WATCH_BV
+    assert entry["groups"] == [{"umo": GROUP, "at_all": True}], "登记时定格订阅群+at_all"
+    assert entry["pushed_rpid"] == ""
+
+    # 不在白名单的 UP：投稿视频照推，但不登记盯梢
+    plugin2 = _make_comment_plugin({"comment_watch_uids": [WATCH_UID]})
+    other = "999999"
+    plugin2.dyn_last_ids[other] = OLD_ID
+    asyncio.run(plugin2._dispatch_dynamics(other, [_video_item(NEW_ID_1, WATCH_BV)],
+                                           _targets(GROUP), plugin2.dynamic_notify_toggles))
+    assert plugin2.dyn_comment_watch == {}, "非白名单 UP 不登记评论盯梢"
+
+
+def test_poll_comment_watches_pushes_once_then_dedupes_then_repin():
+    plugin = _make_comment_plugin({"comment_watch_uids": [WATCH_UID]})
+    plugin.dyn_comment_watch = {
+        f"{WATCH_UID}:{WATCH_AID}": {
+            "uid": WATCH_UID, "aid": WATCH_AID, "bvid": WATCH_BV, "title": "攻略视频",
+            "groups": [{"umo": GROUP, "at_all": False}],
+            "first_seen_ts": main.time.time(), "pushed_rpid": "",
+        }
+    }
+
+    reply_state = {"rpid": 315305036289, "msg": "9.28推荐"}
+
+    async def _fake_top(aid, bvid=""):
+        assert aid == WATCH_AID
+        return {"upper": {"mid": int(WATCH_UID),
+                          "top": {"rpid": reply_state["rpid"], "mid": int(WATCH_UID),
+                                  "ctime": 1, "member": {"uname": "魔兽阿落"},
+                                  "content": {"message": reply_state["msg"],
+                                              "pictures": [{"img_src": "http://i0/x.jpg"}]}}}}
+
+    plugin.get_video_top_comment = _fake_top
+
+    # 第一次：出现置顶评论 → 推一条
+    asyncio.run(plugin._poll_comment_watches())
+    assert len(plugin.comment_pushes) == 1
+    push = plugin.comment_pushes[0]
+    assert push["pinned"]["text"] == "9.28推荐"
+    assert push["pinned"]["images"] == ["https://i0/x.jpg"]  # http 升级 https
+    assert push["origin"] == GROUP and push["at_all"] is False
+
+    # 第二次：同一条 rpid → 不重复推
+    asyncio.run(plugin._poll_comment_watches())
+    assert len(plugin.comment_pushes) == 1, "同一置顶评论只推一次"
+
+    # UP 事后换了置顶（rpid 变化）→ 再推一次新的
+    reply_state["rpid"] = 315305036290
+    reply_state["msg"] = "9.29更新"
+    asyncio.run(plugin._poll_comment_watches())
+    assert len(plugin.comment_pushes) == 2, "换了置顶评论应补推新的"
+    assert plugin.comment_pushes[1]["pinned"]["text"] == "9.29更新"
+
+
+def test_poll_comment_watches_expires_old_entries():
+    plugin = _make_comment_plugin({"comment_watch_uids": [WATCH_UID],
+                                   "dyn_comment_watch_hours": 24})
+    plugin.dyn_comment_watch = {
+        f"{WATCH_UID}:{WATCH_AID}": {
+            "uid": WATCH_UID, "aid": WATCH_AID, "bvid": WATCH_BV, "title": "旧视频",
+            "groups": [{"umo": GROUP, "at_all": False}],
+            "first_seen_ts": main.time.time() - 25 * 3600,  # 超过 24h 窗口
+            "pushed_rpid": "",
+        }
+    }
+    called = {"n": 0}
+
+    async def _fake_top(aid, bvid=""):
+        called["n"] += 1
+        return {}
+
+    plugin.get_video_top_comment = _fake_top
+    asyncio.run(plugin._poll_comment_watches())
+    assert plugin.dyn_comment_watch == {}, "过期盯梢应清除"
+    assert called["n"] == 0, "过期项不该再打评论接口"
+    assert plugin.comment_pushes == []
+
+
+def test_poll_comment_watches_drops_when_uid_removed_from_whitelist():
+    plugin = _make_comment_plugin({"comment_watch_uids": []})  # 白名单已清空
+    plugin.dyn_comment_watch = {
+        f"{WATCH_UID}:{WATCH_AID}": {
+            "uid": WATCH_UID, "aid": WATCH_AID, "bvid": WATCH_BV, "title": "视频",
+            "groups": [{"umo": GROUP, "at_all": False}],
+            "first_seen_ts": main.time.time(), "pushed_rpid": "",
+        }
+    }
+
+    async def _fake_top(aid, bvid=""):
+        raise AssertionError("移出白名单后不该再查评论")
+
+    plugin.get_video_top_comment = _fake_top
+    asyncio.run(plugin._poll_comment_watches())
+    assert plugin.dyn_comment_watch == {}
+
+
+def test_save_comment_watch_uids_cleans_sorts_and_prunes():
+    """_save_comment_watch_uids：只留数字 UID、去重、按数值排序，并清掉已移出白名单的盯梢。"""
+    plugin = _make_comment_plugin()
+    plugin.config["comment_watch_uids"] = []
+    plugin.dyn_comment_watch = {
+        "111:1": {"uid": "111", "aid": 1, "bvid": "BV1", "groups": [],
+                  "first_seen_ts": main.time.time(), "pushed_rpid": ""},
+        "222:2": {"uid": "222", "aid": 2, "bvid": "BV2", "groups": [],
+                  "first_seen_ts": main.time.time(), "pushed_rpid": ""},
+    }
+    # save_config_async / save_config 都没有也不该炸（_persist_config 容错）
+    asyncio.run(plugin._save_comment_watch_uids(["222", "  ", "abc", "111", "222", "999"]))
+    assert plugin.config["comment_watch_uids"] == ["111", "222", "999"], "去重+数值序+剔非数字"
+    # 222/111 仍在白名单 → 盯梢保留；本例都在，故都留
+    assert set(plugin.dyn_comment_watch.keys()) == {"111:1", "222:2"}
+
+    # 再存一次只留 999：111/222 的盯梢应被清掉
+    asyncio.run(plugin._save_comment_watch_uids(["999"]))
+    assert plugin.config["comment_watch_uids"] == ["999"]
+    assert plugin.dyn_comment_watch == {}, "移出白名单的 UP 盯梢应清除"
+
+
+class _FakeEvent:
+    def __init__(self, text, umo=GROUP):
+        self.message_str = text
+        self.unified_msg_origin = umo
+
+    def plain_result(self, text):
+        return ("plain", text)
+
+
+class _CaptureCtx:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, umo, chain):
+        self.sent.append((umo, chain))
+
+
+async def _drain(agen):
+    out = []
+    async for x in agen:
+        out.append(x)
+    return out
+
+
+def test_check_top_comment_by_bvid_sends_pinned_with_image():
+    plugin = _make_comment_plugin({})
+    ctx = _CaptureCtx()
+    plugin.context = ctx
+
+    async def _fake_top(aid, bvid=""):
+        assert aid == WATCH_AID
+        return {"upper": {"mid": int(WATCH_UID),
+                          "top": {"rpid": 1, "mid": int(WATCH_UID),
+                                  "member": {"uname": "魔兽阿落"},
+                                  "content": {"message": "9.28推荐",
+                                              "pictures": [{"img_src": "http://i0/x.jpg"}]}}}}
+
+    plugin.get_video_top_comment = _fake_top
+    ev = _FakeEvent(f"/检查置顶评论 {WATCH_BV}")
+    asyncio.run(_drain(plugin.check_top_comment(ev)))
+    assert len(ctx.sent) == 1
+    umo, chain = ctx.sent[0]
+    assert umo == GROUP
+    assert "魔兽阿落" in "\n".join(chain.texts())
+    assert chain.images() == ["https://i0/x.jpg"]  # http 升级 https
+
+
+def test_check_top_comment_reports_when_no_pinned():
+    plugin = _make_comment_plugin({})
+    ctx = _CaptureCtx()
+    plugin.context = ctx
+
+    async def _fake_top(aid, bvid=""):
+        return {"upper": {"mid": 123}, "top_replies": []}  # 没有置顶
+
+    plugin.get_video_top_comment = _fake_top
+    ev = _FakeEvent(f"/检查置顶评论 {WATCH_BV}")
+    res = asyncio.run(_drain(plugin.check_top_comment(ev)))
+    assert ctx.sent == [], "没有置顶评论时不该发送内容"
+    assert any(kind == "plain" for kind, _ in res), "应回一条文字提示"
+
+
+def test_check_top_comment_usage_hint_without_arg():
+    plugin = _make_comment_plugin({})
+    plugin.context = _CaptureCtx()
+    ev = _FakeEvent("/检查置顶评论")
+    res = asyncio.run(_drain(plugin.check_top_comment(ev)))
+    assert res and res[0][0] == "plain" and "用法" in res[0][1]
+
+
+# ---------------- 基础健全性 ----------------
 def test_module_imports_and_commands_exist():
     names = [
         "subscribe", "unsubscribe", "list_subscriptions", "check_live",
         "dyn_subscribe", "dyn_unsubscribe", "dyn_list", "check_dynamic",
+        "check_top_comment",
         "plugin_status", "handle_private_message",
         "enable_notify_cmd", "disable_notify_cmd",
         "enable_end_notify_cmd", "disable_end_notify_cmd",

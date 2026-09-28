@@ -309,14 +309,41 @@ class BiliLivePageController:
         )
         return out
 
+    async def _ensure_row_names(self) -> None:
+        """把订阅里出现的 UP uid 收齐，交给插件补齐缺失的昵称（带超时，拉不到就先空着）。"""
+        filler = getattr(self.plugin, "fill_up_names", None)
+        if not callable(filler):
+            return
+        uids: list[str] = []
+        seen: set[str] = set()
+        for kind in (KIND_LIVE, KIND_DYNAMIC):
+            for row in sub.subs_to_rows(self._load(kind)):
+                uid = str(row.get("uid") or "").strip()
+                if uid and uid not in seen:
+                    seen.add(uid)
+                    uids.append(uid)
+        if uids:
+            try:
+                await filler(uids)
+            except Exception as exc:  # 补名字失败不该拖垮面板
+                _log_warn(f"补齐 UP 名字失败: {exc}")
+
     async def get_subscriptions(self) -> Any:
         known = self._platform_ids()
         data: dict[str, Any] = {}
         duplicates: list[dict[str, Any]] = []
+        # 先把所有涉及的 UP uid 收齐，缺名字的并发补拉一次（面板显示"名字（UID）"）
+        await self._ensure_row_names()
+        up_names = dict(getattr(self.plugin, "up_names", {}) or {})
+        watch_uids = {str(u) for u in (getattr(self.plugin, "comment_watch_uids", set()) or set())}
         for kind in (KIND_LIVE, KIND_DYNAMIC):
             subs = self._load(kind)
             rows = sub.subs_to_rows(subs)
             for row in rows:
+                row["uname"] = up_names.get(str(row.get("uid")), "")
+                if kind == KIND_DYNAMIC:
+                    # 「盯置顶评论」只对动态订阅有意义（开播订阅不涉及视频评论区）
+                    row["watch_comment"] = str(row.get("uid")) in watch_uids
                 for target in row["targets"]:
                     target.update(self._target(target["umo"], target.get("at_all", False)))
             data[kind] = {
@@ -363,6 +390,24 @@ class BiliLivePageController:
         except Exception as exc:
             _log_warn(f"保存 {kind} 订阅失败: {exc}")
             return self._err(f"保存失败：{exc}", status_code=500)
+
+        # 动态订阅顺带保存「盯置顶评论」白名单：只认还留在订阅里的 UP 的勾选状态，
+        # 但保留不在本次矩阵里的 UID（可能是在别处/命令里加的），避免误删。
+        if kind == KIND_DYNAMIC:
+            watch_saver = getattr(self.plugin, "_save_comment_watch_uids", None)
+            if callable(watch_saver):
+                try:
+                    row_uids = {str((r or {}).get("uid") or "").strip() for r in rows}
+                    checked = {
+                        str((r or {}).get("uid") or "").strip()
+                        for r in rows if (r or {}).get("watch_comment")
+                    }
+                    old = {str(u) for u in (getattr(self.plugin, "comment_watch_uids", set()) or set())}
+                    new_watch = (old - row_uids) | checked  # 矩阵内按勾选，矩阵外原样保留
+                    if new_watch != old:  # 没变化就别写配置（避免每次保存都落一次盘）
+                        await watch_saver(new_watch)
+                except Exception as exc:
+                    _log_warn(f"保存盯置顶评论白名单失败: {exc}")
 
         saved = self._load(kind)
         links = sum(len(v.get("groups", [])) for v in saved.values())

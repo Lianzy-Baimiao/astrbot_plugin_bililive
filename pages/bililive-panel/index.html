@@ -148,7 +148,9 @@ button.tab.on { background: var(--accent-soft); border-color: var(--accent); col
       <table>
         <thead><tr>
           <th style="width:160px">UP 主 UID</th><th>推送群</th>
-          <th style="width:80px">群数</th><th class="acts">操作</th>
+          <th style="width:80px">群数</th>
+          <th style="width:110px" id="subThWatch">盯置顶评论</th>
+          <th class="acts">操作</th>
         </tr></thead>
         <tbody id="subBody"></tbody>
       </table>
@@ -413,8 +415,13 @@ button.tab.on { background: var(--accent-soft); border-color: var(--accent); col
       (invalid.length ? ' <span class="tag warn">' + invalid.length + " 行配置无法解析</span>" : "") +
       " 保存后与群里命令改的是同一份配置。";
 
+    var isDyn = (state.kind === "dynamic");
+    var thWatch = byId("subThWatch");
+    if (thWatch) thWatch.hidden = !isDyn;  // 盯置顶评论列只在「动态订阅」矩阵出现
+    var cols = isDyn ? 5 : 4;
+
     if (!currentRows().length) {
-      tb.innerHTML = '<tr><td colspan="4" class="empty">还没有订阅，点右上角「新增 UP 主」</td></tr>';
+      tb.innerHTML = '<tr><td colspan="' + cols + '" class="empty">还没有订阅，点右上角「新增 UP 主」</td></tr>';
       return;
     }
     tb.innerHTML = currentRows().map(function (row, idx) {
@@ -426,10 +433,16 @@ button.tab.on { background: var(--accent-soft); border-color: var(--accent); col
           esc(t.label || t.umo) + (t.at_all ? " @全体" : "") +
           ' <span class="plat">' + esc(plat) + "</span>" + (bad ? " ⚠" : "") + "</span>";
       }).join("") || '<span class="hint">没有目标群（不会推送）</span>';
+      var watchTd = isDyn
+        ? '<td style="text-align:center"><input type="checkbox" data-act="watch-comment" data-idx="' +
+            idx + '" title="发视频后盯它评论区，等 UP 自己的置顶评论出现再补推一条"' +
+            (row.watch_comment ? " checked" : "") + "></td>"
+        : "";
       return "<tr>" +
-        '<td><b>' + esc(row.uid) + "</b></td>" +
+        '<td>' + (row.uname ? '<b>' + esc(row.uname) + '</b><br><span class="hint">' + esc(row.uid) + "</span>" : '<b>' + esc(row.uid) + "</b>") + "</td>" +
         '<td><div class="tag-list">' + tags + "</div></td>" +
         '<td>' + (row.group_count || 0) + "</td>" +
+        watchTd +
         '<td class="acts">' +
           '<button class="link" data-act="edit-sub" data-idx="' + idx + '">编辑</button>' +
           '<button class="link danger" data-act="del-sub" data-idx="' + idx + '">删除</button>' +
@@ -585,7 +598,7 @@ button.tab.on { background: var(--accent-soft); border-color: var(--accent); col
       (row.targets || []).forEach(function (t) { targets[t.umo] = !!t.at_all; });
       state.editing = { uid: row.uid, targets: targets, idx: idx };
       byId("subTitle").textContent =
-        "编辑 UP 主 " + row.uid + "（" + kindLabel(state.kind) + "）";
+        "编辑 UP 主 " + (row.uname ? row.uname + "（" + row.uid + "）" : row.uid) + "（" + kindLabel(state.kind) + "）";
     }
     byId("subUid").value = state.editing.uid;
     byId("subSearch").value = "";
@@ -679,7 +692,10 @@ button.tab.on { background: var(--accent-soft); border-color: var(--accent); col
       byId("subErr").textContent = "这个 UID 已经在列表里了";
       return;
     }
-    var row = { uid: uid, targets: targets, group_count: targets.length };
+    var prev = (state.editing.idx != null) ? rows[state.editing.idx] : null;
+    var row = { uid: uid, uname: (prev && prev.uname) || "",
+                watch_comment: !!(prev && prev.watch_comment),
+                targets: targets, group_count: targets.length };
     if (state.editing.idx == null) rows.push(row);
     else rows[state.editing.idx] = row;
     rows.sort(function (a, b) { return String(a.uid).localeCompare(String(b.uid)); });
@@ -700,6 +716,7 @@ button.tab.on { background: var(--accent-soft); border-color: var(--accent); col
     var rows = currentRows().map(function (row) {
       return {
         uid: row.uid,
+        watch_comment: !!row.watch_comment,
         targets: (row.targets || []).map(function (t) {
           return { umo: t.umo, at_all: !!t.at_all };
         })
@@ -774,6 +791,18 @@ button.tab.on { background: var(--accent-soft); border-color: var(--accent); col
       var idx = parseInt(el.getAttribute("data-idx"), 10);
       if (act === "edit-sub") openSubModal(idx);
       else if (act === "del-sub") deleteRow(idx);
+    });
+
+    byId("subBody").addEventListener("change", function (e) {
+      var box = e.target;
+      if (!box || box.type !== "checkbox") return;
+      if (box.getAttribute("data-act") !== "watch-comment") return;
+      var idx = parseInt(box.getAttribute("data-idx"), 10);
+      var rows = currentRows();
+      if (rows[idx]) {
+        rows[idx].watch_comment = box.checked;
+        toast("已" + (box.checked ? "开启" : "关闭") + "盯置顶评论，记得点「保存订阅」");
+      }
     });
 
     byId("subGroups").addEventListener("change", function (e) {

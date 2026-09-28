@@ -139,5 +139,24 @@
     "type": "bool",
     "default": false,
     "hint": "投票、播单等归类外的动态。遇到新类型不想漏可以打开。"
+  },
+  "comment_watch_uids": {
+    "description": "置顶评论盯梢·UP白名单",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": [],
+    "hint": "填 UP 主 UID（纯数字，可多个）。这些 UP 投稿视频后，插件会持续盯它的评论区，等 UP 自己发布并置顶的评论出现时补推一条（关键攻略常放在置顶评论里，且晚于视频发布）。留空=不启用此功能。评论接口风控较严，只对确有此习惯的 UP 开启。需要该 UP 已在『动态订阅列表』里且开启了本群动态通知(/开启动态通知)。"
+  },
+  "dyn_comment_watch_hours": {
+    "description": "置顶评论盯梢时长（小时）",
+    "type": "int",
+    "default": 2,
+    "hint": "一条视频发布后盯多久评论区，超时不再检查。实际生效钳制在 1-72 小时，默认 2。UP 通常发视频后不久就发置顶评论；若某 UP 常隔很久才补，再按需调大。"
+  },
+  "comment_notify_template": {
+    "description": "置顶评论通知模板",
+    "type": "string",
+    "default": "📌 {uname} 在视频置顶了评论\n📺 {title}\n💬 {text}\n🔗 {url}",
+    "hint": "占位符: {uname} UP主名称, {title} 视频标题, {text} 置顶评论正文, {url} 评论落地链接。写错占位符不影响推送（原样保留）。评论里的图片会自动附带(最多3张)。"
   }
 }

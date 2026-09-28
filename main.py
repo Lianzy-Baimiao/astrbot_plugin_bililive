@@ -14,6 +14,7 @@ from astrbot.api import logger, AstrBotConfig
 from .bili_login import BilibiliLoginManager
 from . import subscription as sub
 from . import dynamic_report
+from . import comment_report
 from . import wbi
 from .groups import (
     SOURCE_API,
@@ -33,7 +34,7 @@ class _SafeFormatDict(dict):
         return "{" + key + "}"
 
 
-@register("astrbot_plugin_bililive", "BB0813", "B站UP主开播监测与动态推送插件", "2.3.5",
+@register("astrbot_plugin_bililive", "BB0813", "B站UP主开播监测与动态推送插件", "2.4.0",
           "https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive")
 class BiliLivePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -54,6 +55,15 @@ class BiliLivePlugin(Star):
         self.dyn_skip_until: Dict[str, float] = {}
         self.dyn_current_interval = float(self.dynamic_check_interval)
         self._dyn_last_rate_limited = False
+
+        # 置顶评论盯梢：推过视频后盯一段时间评论区，等 UP 自己的置顶评论出现再补推。
+        # {watch_key: {uid, aid, bvid, title, groups:[{umo,at_all}], first_seen_ts, pushed_rpid}}
+        # watch_key = f"{uid}:{aid}"，同一视频只留一条。
+        self.dyn_comment_watch: Dict[str, Dict[str, Any]] = {}
+        self.cmt_skip_until: Dict[str, float] = {}   # {aid: ts} 评论接口按视频退避
+
+        # UP 主 uid → 昵称 缓存（面板显示用；命令/监控/面板路径都会顺手回填）
+        self.up_names: Dict[str, str] = {}
 
         # WBI 签名素材 {img_key, sub_key, fetched_at} / buvid 访客指纹 {b3, b4, fetched_at}
         self._wbi_keys: Dict[str, Any] = {}
@@ -136,6 +146,26 @@ class BiliLivePlugin(Star):
             "music": self._cfg_bool("dyn_notify_music", True),
             "other": self._cfg_bool("dyn_notify_other", False),
         }
+
+    @property
+    def comment_watch_uids(self) -> set:
+        """开启"置顶评论盯梢"的 UP 白名单（uid 字符串集合）。
+
+        只有列进来的 UP 才会在发视频后被盯评论区——评论接口比动态接口更该省着用，
+        所以默认不全量，交给用户显式指定（配置项 ``comment_watch_uids``）。
+        """
+        raw = self._cfg("comment_watch_uids", []) or []
+        out = set()
+        for x in raw:
+            s = str(x).strip()
+            if s.isdigit():
+                out.add(s)
+        return out
+
+    @property
+    def comment_watch_hours(self) -> int:
+        """发视频后盯评论区多久（小时）。钳制 1-72，默认 2。"""
+        return max(1, min(72, self._cfg_int("dyn_comment_watch_hours", 2)))
 
     @property
     def max_monitors(self) -> int:
@@ -249,6 +279,31 @@ class BiliLivePlugin(Star):
             return
         await self._persist_config()
         self._prune_group_settings(dyn_subs=subs)
+
+    async def _save_comment_watch_uids(self, uids) -> None:
+        """把"置顶评论盯梢白名单"写回 config 并落盘（面板保存动态订阅时一并更新）。
+
+        入参可为任意可迭代；只保留纯数字 UID、去重、保序（按数值排一下，写回稳定）。
+        """
+        clean = []
+        seen = set()
+        for x in list(uids or []):
+            s = str(x).strip()
+            if s.isdigit() and s not in seen:
+                seen.add(s)
+                clean.append(s)
+        clean.sort(key=int)
+        try:
+            self.config["comment_watch_uids"] = clean
+        except Exception as e:
+            logger.error(f"写入置顶评论盯梢白名单失败: {e}")
+            return
+        # 已不在白名单里的 UP，顺手清掉它名下的盯梢，别让它继续查评论区
+        allow = set(clean)
+        for key in list(self.dyn_comment_watch.keys()):
+            if str((self.dyn_comment_watch.get(key) or {}).get("uid") or "") not in allow:
+                self.dyn_comment_watch.pop(key, None)
+        await self._persist_config()
 
     async def _persist_config(self):
         """调用 AstrBotConfig 的保存方法，兼容同步/异步两种。"""
@@ -538,6 +593,9 @@ class BiliLivePlugin(Star):
             "dynamic_notify_template": {
                 "uname": "x", "action": "x", "title": "x", "text": "x", "url": "x",
             },
+            "comment_notify_template": {
+                "uname": "x", "title": "x", "text": "x", "url": "x",
+            },
         }
         for name, fields in samples.items():
             t = str(self._cfg(name, "") or "")
@@ -562,9 +620,20 @@ class BiliLivePlugin(Star):
                     self.dyn_last_ids = {
                         str(k): str(v) for k, v in dyn.items() if str(v or "").strip()
                     }
+                watch = data.get("dyn_comment_watch", {})
+                if isinstance(watch, dict):
+                    self.dyn_comment_watch = {
+                        str(k): v for k, v in watch.items() if isinstance(v, dict)
+                    }
+                names = data.get("up_names", {})
+                if isinstance(names, dict):
+                    self.up_names = {
+                        str(k): str(v) for k, v in names.items() if str(v or "").strip()
+                    }
                 logger.info(
                     f"已加载状态缓存：直播 {len(self.live_status_cache)} 条、"
-                    f"动态基线 {len(self.dyn_last_ids)} 条"
+                    f"动态基线 {len(self.dyn_last_ids)} 条、"
+                    f"评论盯梢 {len(self.dyn_comment_watch)} 条"
                 )
         except Exception as e:
             logger.error(f"加载状态缓存失败: {e}")
@@ -576,6 +645,8 @@ class BiliLivePlugin(Star):
                     {
                         "live_status_cache": self.live_status_cache,
                         "dyn_last_ids": self.dyn_last_ids,
+                        "dyn_comment_watch": self.dyn_comment_watch,
+                        "up_names": self.up_names,
                     },
                     f, ensure_ascii=False, indent=2,
                 )
@@ -797,13 +868,60 @@ class BiliLivePlugin(Star):
                 body = await resp.json()
                 if body.get("code") == 0:
                     card = (body.get("data") or {}).get("card") or {}
-                    return {"mid": str(card.get("mid") or ""), "name": str(card.get("name") or "")}
+                    name = str(card.get("name") or "")
+                    self._remember_up_name(uid, name)  # 顺手回填名字缓存（面板显示用）
+                    return {"mid": str(card.get("mid") or ""), "name": name}
                 logger.warning(f"用户名片API返回错误码 UID {uid}: {body.get('code')} {body.get('message')}")
         except Exception as e:
             logger.error(f"获取用户名片异常 UID {uid}: {e}")
         return {}
 
-    # ---------- buvid 访客指纹（动态接口风控必需） ----------
+    # ---------- UP 名字缓存（面板把「只有 UID」升级成「名字 + UID」） ----------
+    def _remember_up_name(self, uid: str, name: str) -> None:
+        """记一个 uid→昵称。空名字不覆盖已有好名字；真变了才存盘。"""
+        uid = str(uid or "").strip()
+        name = str(name or "").strip()
+        if not uid or not name:
+            return
+        if self.up_names.get(uid) == name:
+            return
+        self.up_names[uid] = name
+        self._save_state()
+
+    async def _ensure_up_name(self, uid: str) -> str:
+        """要一个 uid 的名字：缓存命中直接用，否则拉一次名片（会顺手写缓存）。"""
+        uid = str(uid or "").strip()
+        cached = self.up_names.get(uid)
+        if cached:
+            return cached
+        card = await self.get_user_card(uid)  # 成功即写缓存
+        return str((card or {}).get("name") or "")
+
+    async def fill_up_names(self, uids: List[str], timeout: float = 8.0) -> None:
+        """并发补齐一批 uid 的名字（只拉缺失的），整体带超时；拿不到就先空着。
+
+        面板首次加载时用：让"名字（UID）"尽快显示，又不至于因某个请求卡死拖垮面板。
+        """
+        missing = [
+            str(u).strip() for u in (uids or [])
+            if str(u).strip() and not self.up_names.get(str(u).strip())
+        ]
+        if not missing:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(self._ensure_up_name(u) for u in missing),
+                    return_exceptions=True,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            pass  # 没拉到的下次刷新/监控轮询会再补
+        except Exception as e:
+            logger.error(f"批量补齐 UP 名字失败: {e}")
+
+
     async def _ensure_buvid(self):
         """近一天内已有 buvid 就直接用，否则向 spi 接口换一个。
 
@@ -955,7 +1073,48 @@ class BiliLivePlugin(Star):
                 return []
         return []
 
-    # ---------- 监控循环 ----------
+    # ---------- 视频置顶评论拉取（旧版 reply 接口：只需 buvid，不用 WBI 签名） ----------
+    COMMENT_URL = "https://api.bilibili.com/x/v2/reply"
+
+    def _comment_headers(self, bvid: str) -> Dict[str, str]:
+        """评论接口要带视频页 Referer + buvid Cookie，否则易吃 -352 风控。"""
+        headers = self._get_bilibili_headers()
+        bv = str(bvid or "").strip()
+        headers["Referer"] = f"https://www.bilibili.com/video/{bv}/" if bv else "https://www.bilibili.com"
+        headers["Origin"] = "https://www.bilibili.com"
+        headers["Cookie"] = self._dynamic_cookie()
+        return headers
+
+    async def get_video_top_comment(self, aid: int, bvid: str = "") -> Optional[Dict]:
+        """拉某视频评论区的 reply ``data``（含 ``upper.top`` 置顶位）。
+
+        只取第一页最少量（ps=1）即可拿到置顶位；风控/失败返回 None，由调用方退避。
+        解析交给 ``comment_report.extract_pinned`` 做。
+        """
+        if not aid:
+            return None
+        await self.ensure_session()
+        await self._ensure_buvid()  # 评论接口靠 buvid 过风控
+        params = {"type": 1, "oid": int(aid), "pn": 1, "ps": 1, "sort": 1}
+        headers = self._comment_headers(bvid)
+        timeout = aiohttp.ClientTimeout(total=10)
+        try:
+            full_url = f"{self.COMMENT_URL}?{urlencode(params)}"
+            async with self.session.get(full_url, headers=headers, timeout=timeout) as resp:
+                if resp.status != 200:
+                    logger.warning(f"评论接口 HTTP {resp.status} (aid {aid})")
+                    return None
+                body = await resp.json()
+                code = body.get("code")
+                if code == 0:
+                    return body.get("data") or {}
+                # -352/12061 等风控/评论区关闭：交给调用方按 aid 退避
+                logger.warning(f"评论接口错误码 {code} (aid {aid}): {body.get('message')}")
+                return None
+        except Exception as e:
+            logger.error(f"拉取评论异常 (aid {aid}): {e}")
+            return None
+
     async def monitor_live_status(self):
         consecutive_errors = 0
         max_consecutive_errors = 5
@@ -1048,14 +1207,23 @@ class BiliLivePlugin(Star):
                     await asyncio.sleep(min(60, self.dyn_current_interval))
                     continue
 
+                # 评论盯梢先跑：它独立于"本轮是否有 UP 命中动态检查"，
+                # 否则 UP 都处在退避窗口时（uids_to_check 为空）置顶评论就永远补不出来。
+                try:
+                    await self._poll_comment_watches()
+                except Exception as e:
+                    logger.error(f"评论盯梢轮询出错: {e}")
+
                 subs = self._load_dyn_subs()
                 if not subs:
+                    self._save_state()
                     await asyncio.sleep(self.dynamic_check_interval)
                     continue
 
                 now = asyncio.get_running_loop().time()
                 uids_to_check = [u for u in sub.all_uids(subs) if self.dyn_skip_until.get(u, 0) <= now]
                 if not uids_to_check:
+                    self._save_state()
                     await asyncio.sleep(self.dyn_current_interval)
                     continue
 
@@ -1073,6 +1241,13 @@ class BiliLivePlugin(Star):
 
                     groups = (subs.get(uid) or {}).get("groups", []) or []
                     await self._dispatch_dynamics(uid, items, groups, toggles)
+
+                    # 顺手补齐名字缓存（面板显示用），没缓存才拉，失败不影响主流程
+                    if not self.up_names.get(str(uid)):
+                        try:
+                            await self._ensure_up_name(uid)
+                        except Exception:
+                            pass
 
                     # 单UP之间留节奏：动态接口比直播状态接口敏感得多
                     await asyncio.sleep(2.0)
@@ -1118,17 +1293,109 @@ class BiliLivePlugin(Star):
             return
 
         # 挑选/排序/单轮封顶都在纯函数里做（id 必须按数值比，见 dynamic_report）
+        watch_uids = self.comment_watch_uids
         for it in dynamic_report.select_new_dynamics(items, last_id):
             parsed = dynamic_report.extract_dynamic(it)
             if not self._should_notify_dynamic(parsed, toggles):
                 continue
             for g in groups:
                 await self.send_dynamic_notification(parsed, g.get("umo", ""), g.get("at_all", False))
+            # 白名单里的 UP 投稿视频后，登记盯梢它评论区的置顶评论（晚点才出现）
+            if parsed.get("kind") == "video" and str(uid) in watch_uids:
+                self._register_comment_watch(uid, parsed, groups)
 
         # 游标只往前走不回退：接口可能把置顶/旧动态排在列表前面
         latest = dynamic_report.latest_id(items)
         if dynamic_report.is_newer_id(latest, last_id):
             self.dyn_last_ids[uid] = latest
+
+    def _register_comment_watch(self, uid: str, parsed: Dict, groups: List[Dict]):
+        """把一条刚推过的视频登记进评论盯梢清单（需能换算出 av 号）。"""
+        bvid = str(parsed.get("bvid") or "").strip()
+        aid = comment_report.bv2av(bvid)
+        if not aid:
+            return  # 拿不到 bvid/av（如小视频），没法查评论区，跳过
+        key = f"{uid}:{aid}"
+        if key in self.dyn_comment_watch:
+            return
+        # 复制订阅群（连同 at_all），登记时定格——之后改订阅不影响这条视频的补推目标
+        watch_groups = [
+            {"umo": g.get("umo", ""), "at_all": bool(g.get("at_all"))}
+            for g in (groups or []) if g.get("umo")
+        ]
+        self.dyn_comment_watch[key] = {
+            "uid": str(uid),
+            "aid": int(aid),
+            "bvid": bvid,
+            "title": str(parsed.get("title") or ""),
+            "groups": watch_groups,
+            "first_seen_ts": time.time(),
+            "pushed_rpid": "",
+        }
+        # 清单别无限膨胀：超上限先丢最旧的（按登记时间）
+        self._prune_comment_watch()
+        logger.info(f"已登记置顶评论盯梢: UID {uid} 视频 {bvid}(av{aid})")
+
+    def _prune_comment_watch(self, max_entries: int = 100):
+        overflow = len(self.dyn_comment_watch) - max_entries
+        if overflow <= 0:
+            return
+        ordered = sorted(
+            self.dyn_comment_watch.items(),
+            key=lambda kv: float((kv[1] or {}).get("first_seen_ts") or 0),
+        )
+        for key, _ in ordered[:overflow]:
+            self.dyn_comment_watch.pop(key, None)
+
+    async def _poll_comment_watches(self):
+        """遍历评论盯梢清单：拉置顶评论，出现 UP 自己的新置顶就补推；过期项清除。"""
+        if not self.dyn_comment_watch:
+            return
+        now = time.time()
+        window = self.comment_watch_hours * 3600
+        watch_uids = self.comment_watch_uids
+        loop_now = asyncio.get_running_loop().time()
+
+        for key in list(self.dyn_comment_watch.keys()):
+            entry = self.dyn_comment_watch.get(key) or {}
+            uid = str(entry.get("uid") or "")
+            aid = int(entry.get("aid") or 0)
+            # 过期、或该 UP 已被移出白名单：清除盯梢
+            if not aid or (now - float(entry.get("first_seen_ts") or 0) > window) or (uid not in watch_uids):
+                self.dyn_comment_watch.pop(key, None)
+                self.cmt_skip_until.pop(str(aid), None)
+                continue
+            # 评论接口按视频退避
+            if self.cmt_skip_until.get(str(aid), 0) > loop_now:
+                continue
+
+            data = await self.get_video_top_comment(aid, entry.get("bvid", ""))
+            await asyncio.sleep(2.0)  # 单视频之间留节奏，评论接口该省着用
+            if data is None:
+                cnt_key = f"cmt_err:{aid}"
+                cnt = self.dyn_error_counts.get(cnt_key, 0) + 1
+                self.dyn_error_counts[cnt_key] = cnt
+                self.cmt_skip_until[str(aid)] = loop_now + min(1200, 120 * cnt)
+                continue
+            self.dyn_error_counts.pop(f"cmt_err:{aid}", None)
+            self.cmt_skip_until.pop(str(aid), None)
+
+            pinned = comment_report.extract_pinned(data, uid, entry.get("bvid", ""))
+            if not pinned:
+                continue  # 还没置顶评论，继续盯
+            rpid = str(pinned.get("rpid") or "")
+            if not rpid or rpid == str(entry.get("pushed_rpid") or ""):
+                continue  # 同一条已推过（支持 UP 事后换置顶：rpid 变了会再推）
+
+            uname = pinned.get("uname") or self.up_names.get(uid) or "未知UP主"
+            for g in entry.get("groups", []):
+                await self.send_comment_notification(
+                    uname, entry.get("title", ""), pinned,
+                    g.get("umo", ""), bool(g.get("at_all")),
+                )
+            entry["pushed_rpid"] = rpid
+            logger.info(f"置顶评论已补推: UID {uid} 视频 {entry.get('bvid')} rpid {rpid}")
+
 
     def _should_notify_dynamic(self, parsed: Dict, toggles: Dict[str, bool]) -> bool:
         return dynamic_report.should_notify(parsed.get("kind", "other"), toggles)
@@ -1264,6 +1531,49 @@ class BiliLivePlugin(Star):
             logger.info(f"动态通知已发送: {uname}({parsed.get('kind')}) -> {target}")
         except Exception as e:
             logger.error(f"发送动态通知失败: {e}")
+
+    # ---------- 置顶评论通知 ----------
+    def _build_comment_chain(self, template: str, uname: str, title: str,
+                             pinned: Dict, at_all: bool) -> MessageChain:
+        """按模板拼置顶评论通知，附评论图片（置顶评论的关键信息常在图里）。"""
+        text = self._render_template(
+            template,
+            uname=uname,
+            title=title,
+            text=pinned.get("text", ""),
+            url=pinned.get("url", ""),
+        )
+        chain = MessageChain()
+        if at_all:
+            chain.at_all()
+        chain.message(text)
+        for img in (pinned.get("images") or [])[:comment_report.MAX_IMAGES]:
+            if img:
+                chain.url_image(img)
+        return chain
+
+    async def send_comment_notification(self, uname: str, title: str, pinned: Dict,
+                                        origin: str, at_all: bool):
+        """把 UP 自己的置顶评论补推到某个会话。复用动态的群开关 notify_dyn。"""
+        try:
+            if not self.enable_notifications or not origin:
+                return
+            if not self._group_notify_enabled(origin, "notify"):
+                return
+            if not self._group_notify_enabled(origin, "notify_dyn"):
+                return
+            template = self._cfg(
+                "comment_notify_template",
+                "📌 {uname} 在视频置顶了评论\n📺 {title}\n💬 {text}\n🔗 {url}",
+            )
+            target = self._route_umo(origin)
+            # @全体跟随该群的视频推送设置（用户选择）；官方 QQ 机器人不支持 @全体
+            want_at_all = at_all and not self._target_is_official(target)
+            chain = self._build_comment_chain(template, uname, title, pinned, want_at_all)
+            await self.context.send_message(target, chain)
+            logger.info(f"置顶评论通知已发送: {uname} -> {target}")
+        except Exception as e:
+            logger.error(f"发送置顶评论通知失败: {e}")
 
     # ---------- 命令 ----------
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
@@ -1558,6 +1868,83 @@ class BiliLivePlugin(Star):
         except Exception as e:
             logger.error(f"检查动态失败: {e}")
             yield event.plain_result("❌ 检查动态失败，请稍后重试")
+
+    @filter.command("检查置顶评论")
+    async def check_top_comment(self, event: AstrMessageEvent):
+        """/检查置顶评论 <BV号|视频链接|UID> —— 手动拉一次该视频里 UP 自己的置顶评论并展示。
+
+        用来即时验证「置顶评论盯梢」这条链路,不用等轮询:
+        - 给 BV 号或视频链接:直接查这条视频
+        - 给纯数字 UID:自动取该 UP 最近一条投稿视频来查
+        """
+        try:
+            args = event.message_str.strip().split()
+            if len(args) < 2:
+                yield event.plain_result(
+                    "❌ 用法: /检查置顶评论 <BV号 或 视频链接 或 UID>\n"
+                    "例: /检查置顶评论 BV1V9aq6CEeR\n"
+                    "或: /检查置顶评论 2081532576（取该UP最新视频）"
+                )
+                return
+            token = args[1].strip()
+            m = re.search(r"(BV[0-9A-Za-z]{10})", token)
+            bvid = ""
+            owner_uid = ""
+            if m:
+                bvid = m.group(1)
+            elif token.isdigit():
+                owner_uid = token
+                items = await self.get_user_dynamics(token)
+                if not items:
+                    yield event.plain_result(
+                        "⚫ 没拿到该UP的动态（接口风控，或没有公开动态；建议配 bilibili_cookie）")
+                    return
+                for it in items:
+                    p = dynamic_report.extract_dynamic(it)
+                    if p.get("kind") == "video" and p.get("bvid"):
+                        bvid = p["bvid"]
+                        break
+                if not bvid:
+                    yield event.plain_result("⚪ 该UP最近的动态里没有投稿视频（只有视频才有评论区可查）")
+                    return
+            else:
+                yield event.plain_result("❌ 认不出参数，请给 BV号、视频链接或纯数字 UID")
+                return
+
+            aid = comment_report.bv2av(bvid)
+            if not aid:
+                yield event.plain_result(f"❌ BV号无法解析: {bvid}")
+                return
+            data = await self.get_video_top_comment(aid, bvid)
+            if data is None:
+                yield event.plain_result(
+                    "⚫ 没拿到评论数据（接口风控 / 评论区关闭；评论接口靠 buvid，"
+                    "偶发失败可稍后重试或配 bilibili_cookie）")
+                return
+            if not owner_uid:
+                owner_uid = str((data.get("upper") or {}).get("mid") or "")
+            pinned = comment_report.extract_pinned(data, owner_uid, bvid)
+            if not pinned:
+                yield event.plain_result(
+                    f"⚪ 这条视频（{bvid}）暂时没有 UP 自己的置顶评论\n"
+                    "（UP 常在发视频一段时间后才补置顶，可稍后再试）")
+                return
+            uname = pinned.get("uname") or self.up_names.get(owner_uid) or "UP主"
+            imgs = [i for i in (pinned.get("images") or []) if i][:comment_report.MAX_IMAGES]
+            header = (
+                f"📌 手动检查 · {uname} 的视频置顶评论\n"
+                f"💬 {pinned.get('text') or '(无文字，关键信息在下图)'}\n"
+                f"🖼️ 附图 {len(imgs)} 张\n"
+                f"🔗 {pinned.get('url')}"
+            )
+            chain = MessageChain()
+            chain.message(header)
+            for img in imgs:
+                chain.url_image(img)
+            await self.context.send_message(event.unified_msg_origin, chain)
+        except Exception as e:
+            logger.error(f"检查置顶评论失败: {e}")
+            yield event.plain_result("❌ 检查置顶评论失败，请稍后重试")
 
     @filter.command("开播监测状态")
     async def plugin_status(self, event: AstrMessageEvent):

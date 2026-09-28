@@ -130,8 +130,31 @@ class FakePlugin:
         self.dyn_monitor_task = FakeTask(False)
         self.dyn_last_ids = {"111": "abc"}
         self.live_status_cache = {"111": 1}
+        self.up_names = {}
+        self.dyn_comment_watch = {}
         self.save_calls = []
         self.refresh_calls = []
+
+    @property
+    def comment_watch_uids(self):
+        out = set()
+        for x in (self.config.get("comment_watch_uids", []) or []):
+            s = str(x).strip()
+            if s.isdigit():
+                out.add(s)
+        return out
+
+    async def _save_comment_watch_uids(self, uids):
+        clean = sorted(
+            {str(x).strip() for x in uids if str(x).strip().isdigit()}, key=int
+        )
+        self.config["comment_watch_uids"] = clean
+        allow = set(clean)
+        for k in list(self.dyn_comment_watch.keys()):
+            if str((self.dyn_comment_watch[k] or {}).get("uid")) not in allow:
+                self.dyn_comment_watch.pop(k, None)
+        self.config.save_config()
+        self.save_calls.append(("comment_watch", clean))
 
     # ---- 订阅读写（与真实插件同构）----
     def _load_subs(self):
@@ -355,12 +378,61 @@ def test_save_subscriptions_live_and_dynamic():
     assert plugin.save_calls[-1][0] == "dynamic"
 
 
+def test_watch_comment_shown_and_saved_for_dynamic():
+    """动态矩阵：get 带出每行 watch_comment；save 按勾选写回 comment_watch_uids。"""
+    plugin, ctrl, _ = make_case(
+        dynamic_subscriptions=["111=napcat:9", "222=napcat:9"],
+        comment_watch_uids=["111"],
+    )
+    # get：111 勾着、222 没勾；开播(live)矩阵不带这个字段
+    with_request(FakeRequest())
+    ok, data, _ = unwrap(run(ctrl.get_subscriptions()))
+    assert ok
+    dyn_rows = {r["uid"]: r for r in data["dynamic"]["rows"]}
+    assert dyn_rows["111"]["watch_comment"] is True
+    assert dyn_rows["222"]["watch_comment"] is False
+
+    # save：改成勾 222、取消 111
+    rows = [
+        {"uid": "111", "watch_comment": False, "targets": ["napcat:GroupMessage:9"]},
+        {"uid": "222", "watch_comment": True, "targets": ["napcat:GroupMessage:9"]},
+    ]
+    with_request(FakeRequest(body={"kind": "dynamic", "rows": rows}, method="POST"))
+    ok, _, _ = unwrap(run(ctrl.save_subscriptions()))
+    assert ok
+    assert plugin.config["comment_watch_uids"] == ["222"]
+    assert ("comment_watch", ["222"]) in plugin.save_calls
+
+
+def test_watch_comment_preserves_offmatrix_uids():
+    """矩阵外的白名单 UID（在别处/命令里加的）保存时不该被误删。"""
+    plugin, ctrl, _ = make_case(
+        dynamic_subscriptions=["111=napcat:9"],
+        comment_watch_uids=["111", "999"],  # 999 不在动态订阅矩阵里
+    )
+    rows = [{"uid": "111", "watch_comment": True, "targets": ["napcat:GroupMessage:9"]}]
+    with_request(FakeRequest(body={"kind": "dynamic", "rows": rows}, method="POST"))
+    ok, _, _ = unwrap(run(ctrl.save_subscriptions()))
+    assert ok
+    assert plugin.config["comment_watch_uids"] == ["111", "999"]  # 999 保留
+
+
+def test_watch_comment_not_touched_when_saving_live():
+    """保存开播(live)订阅时不应动 comment_watch_uids。"""
+    plugin, ctrl, _ = make_case(comment_watch_uids=["111"])
+    rows = [{"uid": "111", "targets": ["napcat:GroupMessage:9"]}]
+    with_request(FakeRequest(body={"kind": "live", "rows": rows}, method="POST"))
+    ok, _, _ = unwrap(run(ctrl.save_subscriptions()))
+    assert ok
+    assert plugin.config["comment_watch_uids"] == ["111"]
+    assert all(c[0] != "comment_watch" for c in plugin.save_calls)
+
+
 def test_save_subscriptions_validation():
     plugin, ctrl, _ = make_case()
     with_request(FakeRequest(body={"kind": "nope", "rows": []}, method="POST"))
     ok, _, msg = unwrap(run(ctrl.save_subscriptions()))
     assert not ok and "kind" in msg
-
     with_request(FakeRequest(body={"kind": "live", "rows": "x"}, method="POST"))
     ok, _, msg = unwrap(run(ctrl.save_subscriptions()))
     assert not ok and "rows" in msg

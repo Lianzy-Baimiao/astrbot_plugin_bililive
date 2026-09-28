@@ -185,6 +185,7 @@ def extract_dynamic(item: Dict, depth: int = 0) -> Dict[str, Any]:
             "images":   图片URL列表（截到 MAX_IMAGES）,
             "url":      落地页链接,
             "pub_ts":   发布时间戳（int，无则 0）,
+            "bvid":     视频 BV 号（仅投稿视频有，其余为 ""）,
         }
 
     转发动态会把原动态标题/正文拼进 text（只递归一层）。
@@ -204,6 +205,7 @@ def extract_dynamic(item: Dict, depth: int = 0) -> Dict[str, Any]:
     text = _desc_text(item)
     images: List[str] = []
     url = _T_BUF + id_str if id_str else ""
+    bvid = ""  # 仅视频类有；置顶评论盯梢要用它换算 av 号 + 拼视频页链接
 
     archive = major.get("archive") or {}
     opus = major.get("opus") or {}
@@ -220,6 +222,7 @@ def extract_dynamic(item: Dict, depth: int = 0) -> Dict[str, Any]:
         cover = _fix_url(archive.get("cover"))
         if cover:
             images.append(cover)
+        bvid = str(archive.get("bvid") or "")
         url = _fix_url(archive.get("jump_url")) or (
             "https://www.bilibili.com/video/" + str(archive.get("bvid")) if archive.get("bvid") else url
         )
@@ -288,6 +291,7 @@ def extract_dynamic(item: Dict, depth: int = 0) -> Dict[str, Any]:
         "images": images[:MAX_IMAGES],
         "url": url,
         "pub_ts": pub_ts,
+        "bvid": bvid,
     }
 
 
