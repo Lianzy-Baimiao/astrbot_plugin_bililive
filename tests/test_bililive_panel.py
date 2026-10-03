@@ -301,6 +301,8 @@ def test_routes_registered():
     ctrl.register_routes()
     paths = [p for p, *_ in ctx.routes]
     for suffix in (
+        "/page/config",
+        "/page/config/save",
         "/page/meta",
         "/page/status",
         "/page/subscriptions",
@@ -883,6 +885,42 @@ def main():
         fn()
         print(f"  {name} ok")
     print(f"OK ({len(tests)} tests)")
+
+
+def test_comment_watch_config_roundtrip():
+    plugin, ctrl, _ = make_case()
+    assert unwrap(run(ctrl.get_config()))[1]["dyn_comment_watch_hours"] == 2
+    for hours in (1, 6, 72):
+        with_request(FakeRequest(body={"dyn_comment_watch_hours": hours}))
+        assert unwrap(run(ctrl.save_config()))[0]
+        assert plugin.config["dyn_comment_watch_hours"] == hours
+        assert unwrap(run(ctrl.get_config()))[1]["dyn_comment_watch_hours"] == hours
+    assert plugin.config.save_count == 3
+
+
+def test_comment_watch_config_rejects_invalid_and_rolls_back():
+    plugin, ctrl, _ = make_case(dyn_comment_watch_hours=6)
+    for hours in (None, True, 0, 73, 2.5, "6", [], {}):
+        with_request(FakeRequest(body={"dyn_comment_watch_hours": hours}))
+        assert not unwrap(run(ctrl.save_config()))[0]
+        assert plugin.config["dyn_comment_watch_hours"] == 6
+    assert plugin.config.save_count == 0
+    def broken_save():
+        raise OSError("disk full")
+    plugin.config.save_config = broken_save
+    with_request(FakeRequest(body={"dyn_comment_watch_hours": 12}))
+    assert not unwrap(run(ctrl.save_config()))[0]
+    assert plugin.config["dyn_comment_watch_hours"] == 6
+
+
+def test_comment_watch_config_async_save():
+    plugin, ctrl, _ = make_case()
+    async def save():
+        plugin.config.save_count += 1
+    plugin.config.save_config_async = save
+    with_request(FakeRequest(body={"dyn_comment_watch_hours": 12}))
+    assert unwrap(run(ctrl.save_config()))[0]
+    assert plugin.config.save_count == 1
 
 
 if __name__ == "__main__":

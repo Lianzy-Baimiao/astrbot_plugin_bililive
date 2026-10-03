@@ -189,6 +189,7 @@
       " 保存后与群里命令改的是同一份配置。";
 
     var isDyn = (state.kind === "dynamic");
+    byId("commentWatchSettings").hidden = !isDyn;
     var thWatch = byId("subThWatch");
     if (thWatch) thWatch.hidden = !isDyn;  // 盯置顶评论列只在「动态订阅」矩阵出现
     var cols = isDyn ? 5 : 4;
@@ -346,8 +347,32 @@
     });
   }
 
+  function loadCommentWatchConfig() {
+    return apiGet("page/config").then(function (d) {
+      byId("commentWatchHours").value = d.dyn_comment_watch_hours == null ? 2 : d.dyn_comment_watch_hours;
+      byId("commentWatchHours").disabled = false;
+      byId("btnSaveCommentWatch").disabled = false;
+    });
+  }
+
+  function saveCommentWatchConfig() {
+    var input = byId("commentWatchHours");
+    var hours = Number(input.value);
+    if (!input.value.trim() || !Number.isInteger(hours) || hours < 1 || hours > 72) {
+      toast("请输入 1–72 小时的整数", true);
+      return;
+    }
+    var btn = byId("btnSaveCommentWatch");
+    btn.disabled = true;
+    input.disabled = true;
+    apiPost("page/config/save", { dyn_comment_watch_hours: hours }).then(function (d) {
+      input.value = d.dyn_comment_watch_hours;
+      toast("盯梢时长已保存，下轮检查生效");
+    }).catch(fail).finally(function () { btn.disabled = false; input.disabled = false; });
+  }
+
   function loadAll() {
-    return Promise.all([loadStatus(), loadSubscriptions(), loadNotify()]);
+    return Promise.all([loadStatus(), loadSubscriptions(), loadNotify(), loadCommentWatchConfig()]);
   }
 
   // ---------- 订阅编辑 ----------
@@ -554,6 +579,7 @@
       renderSubs();
     });
     byId("btnAddSub").addEventListener("click", function () { openSubModal(null); });
+    byId("btnSaveCommentWatch").addEventListener("click", saveCommentWatchConfig);
     byId("btnSaveSubs").addEventListener("click", saveSubs);
     byId("btnDedupe").addEventListener("click", dedupeSubs);
 

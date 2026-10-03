@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>B站开播监测</title>
+<title>B站订阅助手</title>
+<link rel="icon" type="image/svg+xml" href="./logo.svg">
 <!--
   显式声明桥接 SDK：AstrBot 会把这个 src 重写成带 asset_token 的真实地址。
   整个页面里除这一处外不要再出现那个脚本地址（连注释都不行）。
@@ -14,7 +15,7 @@
 <body>
 <div class="wrap">
   <div class="topbar">
-    <h1>B站开播监测</h1>
+    <h1>B站订阅助手</h1>
     <span class="pill" id="runPill">加载中…</span>
     <span class="spacer"></span>
     <button id="btnReload">刷新</button>
@@ -36,6 +37,14 @@
     <p class="hint" id="subHint">
       一行一个 UP 主，后面挂它要推的群。保存后与群里 /订阅、/退订 命令改的是同一份配置。
     </p>
+    <div id="commentWatchSettings" hidden>
+      <div class="row">
+        <label for="commentWatchHours">置顶评论盯梢时长（小时）</label>
+        <input id="commentWatchHours" type="number" min="1" max="72" step="1" value="2" disabled style="width:100px">
+        <button id="btnSaveCommentWatch" disabled>保存时长</button>
+      </div>
+      <p class="hint">所有勾选「盯置顶评论」的 UP 共用，范围 1–72 小时，默认 2；晚补图建议 6–12 小时。从发现视频时计时，保存后下轮检查生效；已过期删除的视频不会自动恢复，请用 /检查置顶评论 BV号 手动补查。</p>
+    </div>
     <div class="table-wrap">
       <table>
         <thead><tr>

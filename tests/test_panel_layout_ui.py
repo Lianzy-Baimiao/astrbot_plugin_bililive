@@ -10,13 +10,13 @@ BRIDGE = """
 window.AstrBotPluginPage = {
  ready: () => Promise.resolve(),
  apiGet: async path => ({status:'ok',data:{
-  session_ok:true,monitor_running:true,monitors:12,max_monitors:50,
+  dyn_comment_watch_hours:6,session_ok:true,monitor_running:true,monitors:12,max_monitors:50,
   check_interval:60,dynamic_check_interval:180,groups:[],rows:[],records:[],shots:[],
   live:{rows:[]},dynamic:{rows:[]},config:{shot_enabled:true,shot_quality:85,shot_max_height:8000},
   match_types:[{value:'exact',label:'精确'}],formats:[{value:'text',label:'文本'}],
   rules:[],scopes:[{value:'global',label:'全局'}],stats:{total:12,enabled:10,hits:12345},enabled:true
  }}),
- apiPost: async (path,body) => {window.lastPost={path,body};return {status:'ok',data:{}};}
+ apiPost: async (path,body) => {window.lastPost={path,body};return {status:'ok',data:body};}
 };
 """
 class PanelLayoutTests(unittest.TestCase):
@@ -42,6 +42,31 @@ class PanelLayoutTests(unittest.TestCase):
   expect(self.page.locator('.connection')).to_have_text('面板已连接')
  def tearDown(self):
   self.context.close();self.assertEqual(self.errors,[])
+ def test_comment_watch_window_save(self):
+  p=self.page
+  p.locator('.nav-item').nth(1).click()
+  p.locator('#tabDynamic').click()
+  expect(p.locator('#commentWatchHours')).to_have_value('6')
+  p.locator('#commentWatchHours').fill('12')
+  p.locator('#btnSaveCommentWatch').click()
+  p.wait_for_function("window.lastPost && window.lastPost.path==='page/config/save'")
+  self.assertEqual(p.evaluate('window.lastPost.body'),{'dyn_comment_watch_hours':12})
+  expect(p.locator('#commentWatchHours')).to_be_enabled()
+  p.evaluate('window.lastPost=null')
+  p.locator('#commentWatchHours').fill('73')
+  p.locator('#btnSaveCommentWatch').click()
+  expect(p.locator('#toast')).to_contain_text('1–72')
+  self.assertIsNone(p.evaluate('window.lastPost'))
+  p.locator('#tabLive').click()
+  expect(p.locator('#commentWatchSettings')).to_be_hidden()
+ def test_brand_icon_without_external_asset_access(self):
+  p=self.page
+  self.context.route('**/logo.svg',lambda route:route.fulfill(status=403,body='asset token required'))
+  p.reload()
+  expect(p.locator('.connection')).to_have_text('面板已连接')
+  icon=p.locator('.brand-symbol')
+  expect(icon).to_be_visible()
+  self.assertTrue(icon.evaluate("node => node.tagName.toLowerCase() === 'svg' ? node.querySelectorAll('path').length > 0 : node.complete && node.naturalWidth > 0"),'brand icon must render without a separate unauthenticated asset request')
  def test_theme_and_storage(self):
   p=self.page
   expect(p.locator('html')).to_have_attribute('data-theme','light')

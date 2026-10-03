@@ -1,6 +1,6 @@
-# B站UP主开播监测插件 astrbot_plugin_bililive
-# AstrBot Plugin for Bilibili Live Streaming Notification
+# B站订阅助手 astrbot_plugin_bililive
+# AstrBot Bilibili Subscription Assistant
 
-__version__ = "2.3.5"
-__author__ = "BB0813"
-__description__ = "B站UP主开播监测 + 动态推送插件，每个UP主可各自配置推送目标群，配置界面/聊天命令双向管理。"
+__version__ = "2.4.5"
+__author__ = "lianzy"
+__description__ = "B站订阅助手：直播提醒、动态订阅、置顶评论图文补推及 Web 订阅管理。"

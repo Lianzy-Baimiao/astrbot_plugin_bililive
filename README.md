@@ -1,8 +1,9 @@
-# astrbot_plugin_bililive
+# B站订阅助手
 
-监测 B 站 UP 主的**开播状态**与**空间动态**，有变化即推送到指定群。每个 UP 主可独立配置推送目标群；Web 面板、插件配置页、聊天命令三处改的是同一份数据，互相同步。
+<img src="logo.png" alt="B站订阅助手图标" width="112" height="112">
 
-> **源头声明**：本项目 Fork 自 [BB0813/astrbot_plugin_bilibiliobs](https://github.com/BB0813/astrbot_plugin_bilibiliobs)（原作者 **BB0813**），在其代码基础上重写、修复而来，功劳归属源头项目。
+订阅 B 站 UP 主的**直播提醒**、**空间动态**与**置顶评论图文补推**，将更新发送到指定群。每个 UP 主可独立配置推送目标群；Web 面板、插件配置页、聊天命令三处改的是同一份数据，互相同步。
+
 
 > 更新日志见 [Releases](https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive/releases)。
 
@@ -54,7 +55,7 @@
 
 ## Web 面板
 
-AstrBot WebUI → 插件 → B站开播监测 → 打开面板：
+AstrBot WebUI → 插件 → B站订阅助手 → 打开面板：
 
 - **订阅矩阵**：切换「开播订阅 / 动态订阅」，一行一个 UP 主，行内直接挂要推的群标签；「新增 / 编辑」弹窗里勾选群（可按群名/群号搜索、一键刷新机器人所在的全部群），每个群可单独勾 `@全体`。动态订阅矩阵每行还带「盯置顶评论」开关。
 - **按群通知开关**：开播 / 关播 / 动态三列，改即保存，等价于群里 `/开启通知`、`/关闭通知`。
@@ -165,6 +166,7 @@ AstrBot WebUI → 插件 → B站开播监测 → 打开面板：
 
 要求该 UP 已在 `dynamic_subscriptions` 里、本群开着动态通知。之后：
 
+- 可在 Web 面板「订阅管理 → 动态订阅」设置「置顶评论盯梢时长」并单独保存（1–72 小时，晚补图建议 6–12 小时）。保存后下轮检查生效；已过期清除的视频不会自动恢复，可用 `/检查置顶评论 BV号` 补查。
 - 该 UP 投稿视频后，插件在 `dyn_comment_watch_hours`（默认 2）小时内持续检查其评论区
 - 出现 **UP 自己（`mid==UID`）的置顶评论**即按 `comment_notify_template` 补推一条（附图，最多 3 张），推给该视频当时的目标群
 - 同一条只推一次；UP 换置顶（评论 id 变化）会再补推；`@全体` 跟随该群视频的 `@all` 设置
@@ -201,7 +203,11 @@ python tests/test_groups.py            # 群名解析/缓存
 
 ## 关于
 
-- 源头项目（原作者 BB0813）：[BB0813/astrbot_plugin_bilibiliobs](https://github.com/BB0813/astrbot_plugin_bilibiliobs)
+对外名称为「B站订阅助手」；为兼容已有安装，内部插件 ID、仓库名和数据目录仍使用 `astrbot_plugin_bililive`，无需迁移现有配置与订阅。
+
+- 当前维护者：lianzy（白描）
+- 许可证：[AGPL-3.0](LICENSE)；历史来源与归属见 [NOTICE.md](NOTICE.md)。
+
 - 本项目：[Lianzy-Baimiao/astrbot_plugin_bililive](https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive)
 
 

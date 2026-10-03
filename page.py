@@ -115,14 +115,16 @@ class BiliLivePageController:
 
     def register_routes(self) -> None:
         routes: list[tuple[str, Callable[..., Any], list[str], str]] = [
-            ("/page/meta", self.get_meta, ["GET"], "B站监测：常量与运行参数"),
-            ("/page/status", self.get_status, ["GET"], "B站监测：运行状态"),
-            ("/page/subscriptions", self.get_subscriptions, ["GET"], "B站监测：订阅矩阵"),
-            ("/page/subscriptions/save", self.save_subscriptions, ["POST"], "B站监测：保存订阅"),
-            ("/page/subscriptions/dedupe", self.dedupe_subscriptions, ["POST"], "B站监测：合并重复群"),
-            ("/page/notify", self.get_notify, ["GET"], "B站监测：按群通知开关"),
-            ("/page/notify/save", self.save_notify, ["POST"], "B站监测：保存通知开关"),
-            ("/page/groups", self.get_groups, ["GET"], "B站监测：会话列表（带群名）"),
+            ("/page/config", self.get_config, ["GET"], "B站订阅助手：盯梢配置"),
+            ("/page/config/save", self.save_config, ["POST"], "B站订阅助手：保存盯梢配置"),
+            ("/page/meta", self.get_meta, ["GET"], "B站订阅助手：常量与运行参数"),
+            ("/page/status", self.get_status, ["GET"], "B站订阅助手：运行状态"),
+            ("/page/subscriptions", self.get_subscriptions, ["GET"], "B站订阅助手：订阅矩阵"),
+            ("/page/subscriptions/save", self.save_subscriptions, ["POST"], "B站订阅助手：保存订阅"),
+            ("/page/subscriptions/dedupe", self.dedupe_subscriptions, ["POST"], "B站订阅助手：合并重复群"),
+            ("/page/notify", self.get_notify, ["GET"], "B站订阅助手：按群通知开关"),
+            ("/page/notify/save", self.save_notify, ["POST"], "B站订阅助手：保存通知开关"),
+            ("/page/groups", self.get_groups, ["GET"], "B站订阅助手：会话列表（带群名）"),
         ]
         for path, handler, methods, desc in routes:
             try:
@@ -781,6 +783,40 @@ class BiliLivePageController:
                 "refreshed": refreshed,
             }
         )
+
+    async def get_config(self) -> Any:
+        try:
+            hours = int(self._cfg("dyn_comment_watch_hours", 2))
+        except (TypeError, ValueError):
+            hours = 2
+        return self._ok({"dyn_comment_watch_hours": max(1, min(72, hours))})
+
+    async def save_config(self) -> Any:
+        payload = await self._payload()
+        hours = payload.get("dyn_comment_watch_hours")
+        if type(hours) is not int or not 1 <= hours <= 72:
+            return self._err("盯梢时长必须是 1–72 小时的整数")
+        config = getattr(self.plugin, "config", None)
+        if config is None:
+            return self._err("插件尚未就绪", 503)
+        key = "dyn_comment_watch_hours"
+        old = config.get(key, UNSET)
+        config[key] = hours
+        try:
+            saver = getattr(config, "save_config_async", None) or getattr(config, "save_config", None)
+            if not callable(saver):
+                raise RuntimeError("配置对象不支持保存")
+            result = saver()
+            if hasattr(result, "__await__"):
+                await result
+        except Exception as exc:
+            if old is UNSET:
+                config.pop(key, None)
+            else:
+                config[key] = old
+            _log_warn(f"保存盯梢时长失败: {exc}")
+            return self._err("保存失败，请重试", 500)
+        return self._ok({key: hours}, "盯梢时长已保存，下轮检查生效")
 
     async def get_meta(self) -> Any:
         return self._ok(

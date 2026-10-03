@@ -1,9 +1,9 @@
 name: astrbot_plugin_bililive
-desc: B站UP主开播监测 + 动态推送插件，每个UP主可各自配置推送目标群，配置界面/聊天命令双向管理，数据落规范目录。
-short_desc: B站开播监测 + 动态推送
-display_name: B站开播监测
-author: BB0813
-version: 2.4.1
+desc: B站直播提醒、动态订阅与置顶评论图文补推，支持按 UP 主和群管理订阅、通知开关及盯梢时长，提供 Web 面板与聊天命令。
+short_desc: 直播提醒 · 动态订阅 · 置顶评论补推
+display_name: B站订阅助手
+author: lianzy
+version: 2.4.5
 repo: https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive
 # 插件 WebUI 自定义页面（Plugin Pages）能力在 AstrBot v4.24.1 正式引入
 astrbot_version: ">=4.24.1"

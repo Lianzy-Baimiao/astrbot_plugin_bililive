@@ -34,7 +34,7 @@ class _SafeFormatDict(dict):
         return "{" + key + "}"
 
 
-@register("astrbot_plugin_bililive", "BB0813", "B站UP主开播监测与动态推送插件", "2.4.0",
+@register("astrbot_plugin_bililive", "lianzy", "B站订阅助手：直播、动态与置顶评论推送", "2.4.5",
           "https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive")
 class BiliLivePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -667,7 +667,7 @@ class BiliLivePlugin(Star):
             if self._initialized:
                 return
             try:
-                logger.info("正在初始化B站开播监测插件...")
+                logger.info("正在初始化B站订阅助手...")
                 await self.ensure_session()
                 self._load_state()
                 self._load_group_settings()
@@ -702,7 +702,7 @@ class BiliLivePlugin(Star):
                 total = sum(len(v.get("groups", [])) for v in subs.values())
                 dyn_total = sum(len(v.get("groups", [])) for v in dyn_subs.values())
                 logger.info(
-                    f"B站开播监测插件初始化完成，开播 {len(subs)} 个UP/{total} 条群订阅，"
+                    f"B站订阅助手初始化完成，开播 {len(subs)} 个UP/{total} 条群订阅，"
                     f"动态 {len(dyn_subs)} 个UP/{dyn_total} 条群订阅"
                 )
             except Exception as e:
@@ -744,7 +744,7 @@ class BiliLivePlugin(Star):
 
     async def terminate(self):
         try:
-            logger.info("正在停止B站开播监测插件...")
+            logger.info("正在停止B站订阅助手...")
             for task in list(self._group_name_tasks.values()):
                 task.cancel()
             self._group_name_tasks.clear()
@@ -754,7 +754,7 @@ class BiliLivePlugin(Star):
                 logger.warning(f"退出前保存群名缓存失败: {e}")
             self._save_state()
             await self._cleanup_resources()
-            logger.info("B站开播监测插件已完全停止")
+            logger.info("B站订阅助手已完全停止")
         except Exception as e:
             logger.error(f"插件销毁时出错: {e}")
             try:
@@ -1958,7 +1958,7 @@ class BiliLivePlugin(Star):
                 interval_tip = f"（限流退避中，当前 {int(self.current_interval)} 秒）"
             quiet_raw = str(self._cfg("quiet_hours", "") or "").strip()
 
-            message = "🔧 B站开播监测状态:\n"
+            message = "🔧 B站订阅助手状态:\n"
             message += f"• HTTP会话: {'✅ 正常' if (self.session and not self.session.closed) else '❌ 异常'}\n"
             message += f"• 监控任务: {'✅ 运行中' if (self.monitor_task and not self.monitor_task.done()) else '❌ 已停止'}\n"
             message += f"• 全局通知: 开播 {'✅' if self.enable_notifications else '❌'} / 关播 {'✅' if self.enable_end_notifications else '❌'}\n"

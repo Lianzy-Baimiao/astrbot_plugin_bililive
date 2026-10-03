@@ -1,7 +1,7 @@
 /* Standalone panel shell. Local resources only; no framework or external assets. */
 (function () {
   "use strict";
-  var c = {"title": "B站开播监测", "brand": "BILIBILI / LIVE DESK", "mark": "B", "hero": "不错过开播，\n也不错过每一次更新。", "sub": "连接你关注的 UP 主与群聊，让直播与动态消息及时抵达。", "color": "pink", "version": "2.4.1", "old": "2.4.0", "views": [["subscriptions", "订阅管理", "SUBSCRIPTIONS", [0]], ["notifications", "群通知", "NOTIFICATIONS", [1]], ["diagnostics", "订阅诊断", "DIAGNOSTICS", [2]]]};
+  var c = {"title": "B站订阅助手", "brand": "BILI / SUBSCRIPTION HUB", "mark": "B", "hero": "不错过开播，\n也不错过每一次更新。", "sub": "连接你关注的 UP 主与群聊，让直播、动态与置顶评论及时抵达。", "color": "pink", "version": "2.4.5", "old": "2.4.0", "views": [["subscriptions", "订阅管理", "SUBSCRIPTIONS", [0]], ["notifications", "群通知", "NOTIFICATIONS", [1]], ["diagnostics", "订阅诊断", "DIAGNOSTICS", [2]]]};
   var root = document.documentElement;
   var wrap = document.querySelector('.wrap');
   var bar = wrap.querySelector('.topbar');
@@ -27,7 +27,10 @@
   var layout = el('div', 'workspace');
   var rail = el('aside', 'rail');
   var brand = el('a', 'brand'); brand.href = '#overview';
-  brand.append(el('span', 'brand-symbol', c.mark));
+  // Inline trusted local artwork: dynamic relative image URLs bypass host asset rewriting.
+  var brandArtwork = document.createElement("template");
+  brandArtwork.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"34\" height=\"34\" class=\"brand-symbol\" aria-hidden=\"true\" focusable=\"false\" viewBox=\"0 0 512 512\">\n  <title>Bili Subscription Assistant — live, dynamic and pinned comment notifications</title>\n  <defs>\n    <linearGradient id=\"brand-bg\" x2=\"1\" y2=\"1\"><stop stop-color=\"#191f42\"/><stop offset=\"1\" stop-color=\"#34376b\"/></linearGradient>\n    <linearGradient id=\"brand-accent\" x2=\"1\" y2=\"1\"><stop stop-color=\"#ff83b6\"/><stop offset=\"1\" stop-color=\"#fa4989\"/></linearGradient>\n  </defs>\n  <rect x=\"16\" y=\"16\" width=\"480\" height=\"480\" rx=\"112\" fill=\"url(#brand-bg)\"/>\n  <path d=\"M132 132 H338 Q376 132 376 170 V306 Q376 344 338 344 H228 L158 394 V344 H132 Q94 344 94 306 V170 Q94 132 132 132Z\" fill=\"url(#brand-accent)\"/>\n  <path d=\"M211 196 Q203 191 203 201 V285 Q203 295 212 290 L279 249 Q288 243 279 237Z\" fill=\"#fff\"/>\n  <circle cx=\"372\" cy=\"139\" r=\"55\" fill=\"#23294e\"/>\n  <circle cx=\"372\" cy=\"139\" r=\"30\" fill=\"#62edd2\"/>\n  <path d=\"M350 386 H382 M398 386 H410\" stroke=\"#62edd2\" stroke-width=\"13\" stroke-linecap=\"round\"/>\n</svg>\n";
+  brand.append(brandArtwork.content.firstElementChild);
   var brandText = el('span'); brandText.append(el('strong', '', c.title), el('small', '', c.brand)); brand.append(brandText);
   rail.append(brand, el('div', 'nav-label', '工作空间 / WORKSPACE'));
   var nav = el('nav'); nav.setAttribute('aria-label','页面导航'); rail.append(nav);
