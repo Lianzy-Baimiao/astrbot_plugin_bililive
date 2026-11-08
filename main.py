@@ -23,6 +23,7 @@ from .groups import (
     parse_group_list,
 )
 from .page import BiliLivePageController
+from .output_filter import blocked_keyword, filter_output, message_text
 
 PLUGIN_NAME = "astrbot_plugin_bililive"
 
@@ -34,7 +35,7 @@ class _SafeFormatDict(dict):
         return "{" + key + "}"
 
 
-@register("astrbot_plugin_bililive", "lianzy", "B站订阅助手：直播、动态与置顶评论推送", "2.4.5",
+@register("astrbot_plugin_bililive", "lianzy", "B站订阅助手：直播、动态与置顶评论推送", "2.4.7",
           "https://github.com/Lianzy-Baimiao/astrbot_plugin_bililive")
 class BiliLivePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -86,6 +87,7 @@ class BiliLivePlugin(Star):
             context, self._save_cookie_to_config,
             admin_ids_provider=self._admin_ids,
             admin_targets_provider=self._admin_notify_targets,
+            output_blocked=self._output_blocked,
         )
         # initialize() 由框架在加载插件后自动 await（官方生命周期钩子）
 
@@ -104,6 +106,19 @@ class BiliLivePlugin(Star):
             return self.config.get(key, default)
         except Exception:
             return default
+
+    def _output_blocked(self, *texts) -> bool:
+        keyword = blocked_keyword(self.config, *texts)
+        if keyword is not None:
+            logger.info("B站输出已屏蔽，命中关键词：%s", keyword)
+            return True
+        return False
+
+    async def _send_message(self, origin: str, chain, *source_texts) -> bool:
+        if self._output_blocked(message_text(chain), *source_texts):
+            return False
+        await self.context.send_message(origin, chain)
+        return True
 
     def _cfg_int(self, key: str, default: int) -> int:
         try:
@@ -1398,7 +1413,10 @@ class BiliLivePlugin(Star):
 
 
     def _should_notify_dynamic(self, parsed: Dict, toggles: Dict[str, bool]) -> bool:
-        return dynamic_report.should_notify(parsed.get("kind", "other"), toggles)
+        return (
+            dynamic_report.should_notify(parsed.get("kind", "other"), toggles)
+            and not self._output_blocked(parsed.get("uname"), parsed.get("title"), parsed.get("text"))
+        )
 
     # ---------- 推送目标路由（send_message 按平台实例 id 匹配）----------
     def _route_umo(self, umo: str) -> str:
@@ -1459,7 +1477,8 @@ class BiliLivePlugin(Star):
                 template, uname, title, room_id, cover,
                 at_all and not self._target_is_official(target),
             )
-            await self.context.send_message(target, chain)
+            if not await self._send_message(target, chain, uname, title):
+                return
             logger.info(f"开播通知已发送: {uname} -> {target}")
         except Exception as e:
             logger.error(f"发送开播通知失败: {e}")
@@ -1479,7 +1498,8 @@ class BiliLivePlugin(Star):
             template = self._cfg("end_notify_template", "⚫ {uname} 已结束直播")
             target = self._route_umo(origin)
             chain = self._build_message_chain(template, uname, "", room_id, cover, False)
-            await self.context.send_message(target, chain)
+            if not await self._send_message(target, chain, uname, status_info.get("title", "")):
+                return
             logger.info(f"关播通知已发送: {uname} -> {target}")
         except Exception as e:
             logger.error(f"发送关播通知失败: {e}")
@@ -1527,7 +1547,10 @@ class BiliLivePlugin(Star):
                 and not self._target_is_official(target)
             )
             chain = self._build_dynamic_chain(template, parsed, want_at_all)
-            await self.context.send_message(target, chain)
+            if not await self._send_message(
+                target, chain, uname, parsed.get("title"), parsed.get("text"),
+            ):
+                return
             logger.info(f"动态通知已发送: {uname}({parsed.get('kind')}) -> {target}")
         except Exception as e:
             logger.error(f"发送动态通知失败: {e}")
@@ -1570,7 +1593,8 @@ class BiliLivePlugin(Star):
             # @全体跟随该群的视频推送设置（用户选择）；官方 QQ 机器人不支持 @全体
             want_at_all = at_all and not self._target_is_official(target)
             chain = self._build_comment_chain(template, uname, title, pinned, want_at_all)
-            await self.context.send_message(target, chain)
+            if not await self._send_message(target, chain, uname, title, pinned.get("text")):
+                return
             logger.info(f"置顶评论通知已发送: {uname} -> {target}")
         except Exception as e:
             logger.error(f"发送置顶评论通知失败: {e}")
@@ -1583,6 +1607,7 @@ class BiliLivePlugin(Star):
             event.stop_event()  # 登录关键词已消费，不再交给后续处理器/LLM
 
     @filter.command("订阅")
+    @filter_output
     async def subscribe(self, event: AstrMessageEvent):
         """/订阅 <UID> [at_all] —— 把当前群加入该UP的推送目标。"""
         try:
@@ -1629,6 +1654,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 订阅失败，请稍后重试")
 
     @filter.command("退订")
+    @filter_output
     async def unsubscribe(self, event: AstrMessageEvent):
         """/退订 <UID或序号> —— 从当前群移除某UP。序号来自 /订阅列表。"""
         try:
@@ -1666,6 +1692,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 退订失败，请稍后重试")
 
     @filter.command("订阅列表")
+    @filter_output
     async def list_subscriptions(self, event: AstrMessageEvent):
         """列出当前群订阅的UP（带序号，供 /退订 用）。"""
         try:
@@ -1693,6 +1720,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 获取订阅列表失败，请稍后重试")
 
     @filter.command("检查直播")
+    @filter_output
     async def check_live(self, event: AstrMessageEvent):
         """/检查直播 <UID> —— 手动查一次状态。"""
         try:
@@ -1711,6 +1739,8 @@ class BiliLivePlugin(Star):
                 return
 
             uname = status_info.get("uname", "未知UP主")
+            if self._output_blocked(uname, status_info.get("title", "")):
+                return
             if status_info.get("live_status") == 1:
                 title = status_info.get("title", "无标题")
                 room_id = status_info.get("room_id", 0)
@@ -1728,6 +1758,7 @@ class BiliLivePlugin(Star):
 
     # ---------- 动态订阅命令 ----------
     @filter.command("动态订阅")
+    @filter_output
     async def dyn_subscribe(self, event: AstrMessageEvent):
         """/动态订阅 <UID> [at_all] —— 把本群加入该UP的动态推送目标。"""
         try:
@@ -1777,6 +1808,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 动态订阅失败，请稍后重试")
 
     @filter.command("退订动态")
+    @filter_output
     async def dyn_unsubscribe(self, event: AstrMessageEvent):
         """/退订动态 <UID或序号> —— 从本群移除该UP的动态订阅。序号来自 /动态列表。"""
         try:
@@ -1814,6 +1846,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 退订动态失败，请稍后重试")
 
     @filter.command("动态列表")
+    @filter_output
     async def dyn_list(self, event: AstrMessageEvent):
         """列出本群订阅的动态UP（带序号，供 /退订动态 用）。"""
         try:
@@ -1839,6 +1872,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 获取动态列表失败，请稍后重试")
 
     @filter.command("检查动态")
+    @filter_output
     async def check_dynamic(self, event: AstrMessageEvent):
         """/检查动态 <UID> —— 手动拉一次该UP最新动态并展示前3条（用来验证动态接口通不通）。"""
         try:
@@ -1862,6 +1896,9 @@ class BiliLivePlugin(Star):
             message = f"📰 {uname} 最近动态（最多3条）:"
             for it in items[:3]:
                 p = dynamic_report.extract_dynamic(it)
+                # 在截断摘要前检查全文，避免标题正常、正文命中时漏发。
+                if self._output_blocked(p.get("uname"), p.get("title"), p.get("text")):
+                    return
                 title = p.get("title") or (p.get("text") or "")[:40]
                 message += f"\n• [{p['kind']}] {p['action']} - {title}\n  🔗 {p['url']}"
             yield event.plain_result(message)
@@ -1870,6 +1907,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 检查动态失败，请稍后重试")
 
     @filter.command("检查置顶评论")
+    @filter_output
     async def check_top_comment(self, event: AstrMessageEvent):
         """/检查置顶评论 <BV号|视频链接|UID> —— 手动拉一次该视频里 UP 自己的置顶评论并展示。
 
@@ -1902,6 +1940,8 @@ class BiliLivePlugin(Star):
                 for it in items:
                     p = dynamic_report.extract_dynamic(it)
                     if p.get("kind") == "video" and p.get("bvid"):
+                        if self._output_blocked(p.get("uname"), p.get("title"), p.get("text")):
+                            return
                         bvid = p["bvid"]
                         break
                 if not bvid:
@@ -1941,12 +1981,13 @@ class BiliLivePlugin(Star):
             chain.message(header)
             for img in imgs:
                 chain.url_image(img)
-            await self.context.send_message(event.unified_msg_origin, chain)
+            await self._send_message(event.unified_msg_origin, chain)
         except Exception as e:
             logger.error(f"检查置顶评论失败: {e}")
             yield event.plain_result("❌ 检查置顶评论失败，请稍后重试")
 
     @filter.command("开播监测状态")
+    @filter_output
     async def plugin_status(self, event: AstrMessageEvent):
         """查看插件运行状态与生效配置。"""
         try:
@@ -2005,6 +2046,7 @@ class BiliLivePlugin(Star):
     )
 
     @filter.command("开启通知")
+    @filter_output
     async def enable_notify_cmd(self, event: AstrMessageEvent):
         if not self._is_admin(event):
             yield event.plain_result(self._ADMIN_TIP)
@@ -2017,6 +2059,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 开启通知失败")
 
     @filter.command("关闭通知")
+    @filter_output
     async def disable_notify_cmd(self, event: AstrMessageEvent):
         if not self._is_admin(event):
             yield event.plain_result(self._ADMIN_TIP)
@@ -2029,6 +2072,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 关闭通知失败")
 
     @filter.command("开启关播通知")
+    @filter_output
     async def enable_end_notify_cmd(self, event: AstrMessageEvent):
         if not self._is_admin(event):
             yield event.plain_result(self._ADMIN_TIP)
@@ -2041,6 +2085,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 开启关播通知失败")
 
     @filter.command("关闭关播通知")
+    @filter_output
     async def disable_end_notify_cmd(self, event: AstrMessageEvent):
         if not self._is_admin(event):
             yield event.plain_result(self._ADMIN_TIP)
@@ -2053,6 +2098,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 关闭关播通知失败")
 
     @filter.command("开启动态通知")
+    @filter_output
     async def enable_dyn_notify_cmd(self, event: AstrMessageEvent):
         if not self._is_admin(event):
             yield event.plain_result(self._ADMIN_TIP)
@@ -2065,6 +2111,7 @@ class BiliLivePlugin(Star):
             yield event.plain_result("❌ 开启动态通知失败")
 
     @filter.command("关闭动态通知")
+    @filter_output
     async def disable_dyn_notify_cmd(self, event: AstrMessageEvent):
         if not self._is_admin(event):
             yield event.plain_result(self._ADMIN_TIP)

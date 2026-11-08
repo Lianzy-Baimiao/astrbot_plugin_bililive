@@ -5,6 +5,8 @@
 ``window.AstrBotPluginPage`` 的 apiGet / apiPost 调用（bridge 会自动补插件名前缀）。
 
     GET  /page/meta                 常量与运行参数（间隔、上限、静音时段）
+    GET  /page/config               输出屏蔽清单与评论盯梢时长
+    POST /page/config/save          保存指定配置项，未提交的项保持不变
     GET  /page/status               运行状态（会话/任务/限流退避/Cookie/无效配置行）
     GET  /page/subscriptions        开播 + 动态订阅（UP 主 × 群 矩阵）+ 候选群
     POST /page/subscriptions/save   保存某一类订阅（写回 config，走插件的保存与剪枝）
@@ -68,6 +70,7 @@ except (ImportError, AttributeError):  # 老版本回落到 quart
 
 from . import subscription as sub
 from .groups import GroupNameResolver, session_label
+from .output_filter import normalize_keywords
 
 PLUGIN_NAME = "astrbot_plugin_bililive"
 
@@ -115,8 +118,8 @@ class BiliLivePageController:
 
     def register_routes(self) -> None:
         routes: list[tuple[str, Callable[..., Any], list[str], str]] = [
-            ("/page/config", self.get_config, ["GET"], "B站订阅助手：盯梢配置"),
-            ("/page/config/save", self.save_config, ["POST"], "B站订阅助手：保存盯梢配置"),
+            ("/page/config", self.get_config, ["GET"], "B站订阅助手：盯梢与输出屏蔽配置"),
+            ("/page/config/save", self.save_config, ["POST"], "B站订阅助手：保存盯梢与输出屏蔽配置"),
             ("/page/meta", self.get_meta, ["GET"], "B站订阅助手：常量与运行参数"),
             ("/page/status", self.get_status, ["GET"], "B站订阅助手：运行状态"),
             ("/page/subscriptions", self.get_subscriptions, ["GET"], "B站订阅助手：订阅矩阵"),
@@ -789,20 +792,33 @@ class BiliLivePageController:
             hours = int(self._cfg("dyn_comment_watch_hours", 2))
         except (TypeError, ValueError):
             hours = 2
-        return self._ok({"dyn_comment_watch_hours": max(1, min(72, hours))})
+        return self._ok({
+            "dyn_comment_watch_hours": max(1, min(72, hours)),
+            "output_block_keywords": normalize_keywords(self._cfg("output_block_keywords", ["无限"])),
+        })
 
     async def save_config(self) -> Any:
         payload = await self._payload()
-        hours = payload.get("dyn_comment_watch_hours")
-        if type(hours) is not int or not 1 <= hours <= 72:
-            return self._err("盯梢时长必须是 1–72 小时的整数")
+        updates = {}
+        if "dyn_comment_watch_hours" in payload:
+            hours = payload["dyn_comment_watch_hours"]
+            if type(hours) is not int or not 1 <= hours <= 72:
+                return self._err("盯梢时长必须是 1–72 小时的整数")
+            updates["dyn_comment_watch_hours"] = hours
+        if "output_block_keywords" in payload:
+            keywords = payload["output_block_keywords"]
+            if not isinstance(keywords, list) or not all(isinstance(word, str) for word in keywords):
+                return self._err("输出屏蔽关键词必须是文本列表，每项一个关键词")
+            updates["output_block_keywords"] = normalize_keywords(keywords)
+        if not updates:
+            return self._err("没有可保存的设置")
         config = getattr(self.plugin, "config", None)
         if config is None:
             return self._err("插件尚未就绪", 503)
-        key = "dyn_comment_watch_hours"
-        old = config.get(key, UNSET)
-        config[key] = hours
+        previous = {key: config.get(key, UNSET) for key in updates}
         try:
+            for key, value in updates.items():
+                config[key] = value
             saver = getattr(config, "save_config_async", None) or getattr(config, "save_config", None)
             if not callable(saver):
                 raise RuntimeError("配置对象不支持保存")
@@ -810,13 +826,14 @@ class BiliLivePageController:
             if hasattr(result, "__await__"):
                 await result
         except Exception as exc:
-            if old is UNSET:
-                config.pop(key, None)
-            else:
-                config[key] = old
-            _log_warn(f"保存盯梢时长失败: {exc}")
+            for key, value in previous.items():
+                if value is UNSET:
+                    config.pop(key, None)
+                else:
+                    config[key] = value
+            _log_warn(f"保存插件设置失败: {exc}")
             return self._err("保存失败，请重试", 500)
-        return self._ok({key: hours}, "盯梢时长已保存，下轮检查生效")
+        return self._ok(updates, "设置已保存")
 
     async def get_meta(self) -> Any:
         return self._ok(

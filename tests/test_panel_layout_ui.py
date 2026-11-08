@@ -7,16 +7,22 @@ from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright, expect
 ROOT = next((Path(__file__).resolve().parents[1] / "pages").iterdir())
 BRIDGE = """
+let config = {dyn_comment_watch_hours:6, output_block_keywords:['无限']};
 window.AstrBotPluginPage = {
  ready: () => Promise.resolve(),
  apiGet: async path => ({status:'ok',data:{
-  dyn_comment_watch_hours:6,session_ok:true,monitor_running:true,monitors:12,max_monitors:50,
+  ...config,session_ok:true,monitor_running:true,monitors:12,max_monitors:50,
   check_interval:60,dynamic_check_interval:180,groups:[],rows:[],records:[],shots:[],
   live:{rows:[]},dynamic:{rows:[]},config:{shot_enabled:true,shot_quality:85,shot_max_height:8000},
   match_types:[{value:'exact',label:'精确'}],formats:[{value:'text',label:'文本'}],
   rules:[],scopes:[{value:'global',label:'全局'}],stats:{total:12,enabled:10,hits:12345},enabled:true
  }}),
- apiPost: async (path,body) => {window.lastPost={path,body};return {status:'ok',data:body};}
+ apiPost: async (path,body) => {
+  window.lastPost={path,body};
+  if(window.failSave) throw new Error('模拟保存失败');
+  if(path==='page/config/save') config={...config,...body};
+  return {status:'ok',data:path==='page/config/save'?config:body};
+ }
 };
 """
 class PanelLayoutTests(unittest.TestCase):
@@ -59,6 +65,32 @@ class PanelLayoutTests(unittest.TestCase):
   self.assertIsNone(p.evaluate('window.lastPost'))
   p.locator('#tabLive').click()
   expect(p.locator('#commentWatchSettings')).to_be_hidden()
+ def test_output_block_keywords_visible_save_and_clear(self):
+  p=self.page
+  p.get_by_role('button',name='插件设置',exact=True).click()
+  keywords=p.get_by_label('输出屏蔽关键词',exact=True)
+  expect(keywords).to_be_visible();expect(keywords).to_have_value('无限')
+  keywords.fill('无限\n 广告 \n无限\n\n')
+  p.get_by_role('button',name='总览',exact=True).click()
+  p.get_by_role('button',name='插件设置',exact=True).click()
+  expect(keywords).to_have_value('无限\n 广告 \n无限\n\n')
+  p.locator('#btnSaveOutputFilter').click()
+  expect(p.locator('#outputFilterStatus')).to_contain_text('已保存')
+  self.assertEqual(p.evaluate('window.lastPost'),{'path':'page/config/save','body':{'output_block_keywords':['无限','广告']}})
+  p.locator('#btnReload').click()
+  expect(keywords).to_have_value('无限\n广告')
+  keywords.fill('');p.locator('#btnSaveOutputFilter').click()
+  expect(p.locator('#outputFilterStatus')).to_contain_text('已保存')
+  self.assertEqual(p.evaluate('window.lastPost.body.output_block_keywords'),[])
+ def test_output_block_keywords_failed_save_preserves_draft(self):
+  p=self.page
+  p.get_by_role('button',name='插件设置',exact=True).click()
+  keywords=p.get_by_label('输出屏蔽关键词',exact=True)
+  keywords.fill('广告');p.evaluate('window.failSave=true')
+  p.locator('#btnSaveOutputFilter').click()
+  expect(p.locator('#toast')).to_contain_text('模拟保存失败')
+  expect(keywords).to_have_value('广告')
+  expect(p.locator('#btnSaveOutputFilter')).to_be_enabled()
  def test_brand_icon_without_external_asset_access(self):
   p=self.page
   self.context.route('**/logo.svg',lambda route:route.fulfill(status=403,body='asset token required'))

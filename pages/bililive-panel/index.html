@@ -88,6 +88,18 @@
       <b>②</b> 同一个群号有多种写法时只留一个（优先留能发出去的）。不会动别的订阅。
     </p>
   </div>
+  <div class="card">
+    <h2>输出屏蔽</h2>
+    <div class="field">
+      <label for="outputBlockKeywords">输出屏蔽关键词</label>
+      <textarea id="outputBlockKeywords" rows="6" spellcheck="false" aria-describedby="outputFilterHelp" placeholder="每行一个关键词，例如：无限" disabled></textarea>
+      <p class="hint" id="outputFilterHelp">每行一个，默认屏蔽「无限」。检查 UP 名称、标题、正文及通知文字；命中任意关键词时，整条内容、附图和 @全体 都不发送。保存后立即生效；清空并保存可关闭屏蔽。</p>
+    </div>
+    <div class="row">
+      <button id="btnSaveOutputFilter" class="primary" disabled>保存屏蔽清单</button>
+      <span class="hint" id="outputFilterStatus" role="status"></span>
+    </div>
+  </div>
 </div>
 
 <div class="modal-mask" id="subMask" hidden>

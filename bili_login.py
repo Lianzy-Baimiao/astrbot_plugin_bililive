@@ -13,6 +13,7 @@ from typing import Dict, Optional
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image, Plain
 from astrbot.api import logger
+from .output_filter import message_text
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -26,7 +27,7 @@ class BilibiliLoginManager:
     QR_CODE_TTL_SECONDS = 180
 
     def __init__(self, context, config_save_callback,
-                 admin_ids_provider=None, admin_targets_provider=None):
+                 admin_ids_provider=None, admin_targets_provider=None, output_blocked=None):
         """初始化登录管理器
 
         Args:
@@ -34,15 +35,27 @@ class BilibiliLoginManager:
             config_save_callback: 保存Cookie的回调，签名 async def(cookie: str)
             admin_ids_provider: 返回管理员QQ号列表的回调（用于命令鉴权），可为 None
             admin_targets_provider: 返回管理员私聊 umo 列表的回调（用于失效提醒），可为 None
+            output_blocked: 与主插件共用的文本屏蔽回调，可为 None
         """
         self.context = context
         self.config_save_callback = config_save_callback
         self.admin_ids_provider = admin_ids_provider
         self.admin_targets_provider = admin_targets_provider
+        self.output_blocked = output_blocked
         self._login_in_progress = False
         self._lock = asyncio.Lock()
         self._admin_id = None  # 管理员ID，首次私聊时自动记录（admin_ids 未配置时的兜底）
         self._last_invalid_cookie = None  # 已提醒过失效的 Cookie，避免重试期间刷屏
+
+    async def _send_to(self, origin, message):
+        if self.output_blocked and self.output_blocked(message_text(message)):
+            return
+        await self.context.send_message(origin, message)
+
+    async def _send_reply(self, event, result):
+        if self.output_blocked and self.output_blocked(message_text(result)):
+            return
+        await event.send(result)
 
     async def validate_cookie(self, cookie: str) -> Optional[bool]:
         """验证Cookie是否有效
@@ -116,7 +129,7 @@ class BilibiliLoginManager:
                 pass
             if sender not in admin_ids:
                 logger.warning(f"非管理员({sender or '未知'})尝试B站登录命令，已拒绝")
-                await event.send(event.plain_result(
+                await self._send_reply(event, event.plain_result(
                     "❌ 仅插件管理员可以B站登录（在插件配置 admin_ids 中填写QQ号）"))
                 return True
 
@@ -163,7 +176,7 @@ class BilibiliLoginManager:
             )
             for target in targets:
                 try:
-                    await self.context.send_message(target, message)
+                    await self._send_to(target, message)
                     logger.info(f"已向管理员发送Cookie失效通知: {target}")
                 except Exception as e:
                     logger.error(f"发送Cookie失效通知失败({target}): {e}")
@@ -182,7 +195,7 @@ class BilibiliLoginManager:
         """启动扫码登录流程"""
         async with self._lock:
             if self._login_in_progress:
-                await event.send(event.plain_result("⚠️ 已有一轮扫码登录正在进行，请等待完成"))
+                await self._send_reply(event, event.plain_result("⚠️ 已有一轮扫码登录正在进行，请等待完成"))
                 return
             self._login_in_progress = True
 
@@ -203,7 +216,7 @@ class BilibiliLoginManager:
         except Exception as e:
             self._login_in_progress = False
             logger.error(f"启动扫码登录失败: {e}")
-            await event.send(event.plain_result(f"❌ 启动扫码登录失败: {e}"))
+            await self._send_reply(event, event.plain_result(f"❌ 启动扫码登录失败: {e}"))
 
     async def _generate_login_payload(self, session: aiohttp.ClientSession) -> Dict[str, str]:
         """生成登录二维码数据"""
@@ -244,12 +257,12 @@ class BilibiliLoginManager:
                 Image.fromFileSystem(qr_path),
             ]
 
-            await event.send(event.chain_result(chain))
+            await self._send_reply(event, event.chain_result(chain))
             logger.info("二维码已发送")
 
         except Exception as e:
             logger.warning(f"发送二维码图片失败: {e}，回退为纯文本")
-            await event.send(
+            await self._send_reply(event,
                 event.plain_result(
                     f"📱 请在手机浏览器打开以下链接完成登录：\n{login_url}\n"
                     f"⏱ 链接有效期: {self.QR_CODE_TTL_SECONDS // 60} 分钟"
@@ -317,13 +330,13 @@ class BilibiliLoginManager:
                                 if cookie:
                                     self._last_invalid_cookie = None
                                     await self.config_save_callback(cookie)
-                                    await self.context.send_message(
+                                    await self._send_to(
                                         unified_msg_origin,
                                         "✅ B站扫码登录成功，Cookie已自动更新！"
                                     )
                                     logger.info("B站登录成功，Cookie已更新")
                                 else:
-                                    await self.context.send_message(
+                                    await self._send_to(
                                         unified_msg_origin,
                                         "❌ 登录成功但未获取到有效Cookie，请手动配置"
                                     )
@@ -331,7 +344,7 @@ class BilibiliLoginManager:
                                 return
 
                             elif code == 86038:
-                                await self.context.send_message(
+                                await self._send_to(
                                     unified_msg_origin,
                                     "⏰ 二维码已过期，请重新发起登录"
                                 )
@@ -347,7 +360,7 @@ class BilibiliLoginManager:
                         await asyncio.sleep(2)
                         continue
 
-                await self.context.send_message(
+                await self._send_to(
                     unified_msg_origin,
                     "⏰ 扫码登录超时，请重新发起"
                 )
@@ -356,7 +369,7 @@ class BilibiliLoginManager:
         except Exception as e:
             logger.error(f"扫码登录流程异常: {e}")
             try:
-                await self.context.send_message(
+                await self._send_to(
                     unified_msg_origin,
                     f"❌ 扫码登录失败: {e}"
                 )

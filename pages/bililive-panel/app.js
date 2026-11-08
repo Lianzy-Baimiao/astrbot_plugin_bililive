@@ -347,11 +347,49 @@
     });
   }
 
+  var outputFilterDirty = false;
+  var outputFilterSaving = false;
+  var outputFilterRevision = 0;
+
   function loadCommentWatchConfig() {
+    var revision = outputFilterRevision;
     return apiGet("page/config").then(function (d) {
       byId("commentWatchHours").value = d.dyn_comment_watch_hours == null ? 2 : d.dyn_comment_watch_hours;
       byId("commentWatchHours").disabled = false;
       byId("btnSaveCommentWatch").disabled = false;
+      if (!outputFilterDirty && revision === outputFilterRevision) {
+        byId("outputBlockKeywords").value = (d.output_block_keywords || []).join("\n");
+      }
+      byId("outputBlockKeywords").disabled = outputFilterSaving;
+      byId("btnSaveOutputFilter").disabled = outputFilterSaving;
+    });
+  }
+
+  function saveOutputFilter() {
+    if (outputFilterSaving) return;
+    var input = byId("outputBlockKeywords");
+    var keywords = Array.from(new Set(input.value.split(/\r?\n/).map(function (word) {
+      return word.trim();
+    }).filter(Boolean)));
+    outputFilterSaving = true;
+    outputFilterRevision++;
+    input.disabled = true;
+    byId("btnSaveOutputFilter").disabled = true;
+    byId("outputFilterStatus").textContent = "保存中…";
+    return apiPost("page/config/save", { output_block_keywords: keywords }).then(function (d) {
+      input.value = d.output_block_keywords.join("\n");
+      outputFilterDirty = false;
+      byId("outputFilterStatus").textContent = d.output_block_keywords.length
+        ? "已保存，" + d.output_block_keywords.length + " 个关键词立即生效"
+        : "已保存，输出屏蔽已关闭";
+      toast("屏蔽清单已保存");
+    }).catch(function (err) {
+      byId("outputFilterStatus").textContent = "保存失败，修改已保留，请重试";
+      fail(err);
+    }).finally(function () {
+      outputFilterSaving = false;
+      input.disabled = false;
+      byId("btnSaveOutputFilter").disabled = false;
     });
   }
 
@@ -580,6 +618,17 @@
     });
     byId("btnAddSub").addEventListener("click", function () { openSubModal(null); });
     byId("btnSaveCommentWatch").addEventListener("click", saveCommentWatchConfig);
+    byId("btnSaveOutputFilter").addEventListener("click", saveOutputFilter);
+    byId("outputBlockKeywords").addEventListener("input", function () {
+      outputFilterDirty = true;
+      outputFilterRevision++;
+      byId("outputFilterStatus").textContent = "未保存，点击「保存屏蔽清单」后生效";
+    });
+    window.addEventListener("beforeunload", function (event) {
+      if (!outputFilterDirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    });
     byId("btnSaveSubs").addEventListener("click", saveSubs);
     byId("btnDedupe").addEventListener("click", dedupeSubs);
 

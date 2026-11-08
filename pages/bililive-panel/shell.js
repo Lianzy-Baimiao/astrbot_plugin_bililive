@@ -1,7 +1,7 @@
 /* Standalone panel shell. Local resources only; no framework or external assets. */
 (function () {
   "use strict";
-  var c = {"title": "B站订阅助手", "brand": "BILI / SUBSCRIPTION HUB", "mark": "B", "hero": "不错过开播，\n也不错过每一次更新。", "sub": "连接你关注的 UP 主与群聊，让直播、动态与置顶评论及时抵达。", "color": "pink", "version": "2.4.5", "old": "2.4.0", "views": [["subscriptions", "订阅管理", "SUBSCRIPTIONS", [0]], ["notifications", "群通知", "NOTIFICATIONS", [1]], ["diagnostics", "订阅诊断", "DIAGNOSTICS", [2]]]};
+  var c = {"title": "B站订阅助手", "brand": "BILI / SUBSCRIPTION HUB", "mark": "B", "hero": "不错过开播，\n也不错过每一次更新。", "sub": "连接你关注的 UP 主与群聊，让直播、动态与置顶评论及时抵达。", "color": "pink", "version": "2.4.7", "old": "2.4.0", "views": [["subscriptions", "订阅管理", "SUBSCRIPTIONS", [0]], ["notifications", "群通知", "NOTIFICATIONS", [1]], ["diagnostics", "订阅诊断", "DIAGNOSTICS", [2]], ["settings", "插件设置", "CONFIGURATION", [3]]]};
   var root = document.documentElement;
   var wrap = document.querySelector('.wrap');
   var bar = wrap.querySelector('.topbar');
